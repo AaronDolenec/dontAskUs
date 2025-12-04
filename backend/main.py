@@ -7,12 +7,15 @@ from datetime import datetime, timedelta, date
 import secrets
 import string
 import json
+import qrcode
+import base64
+import io
 from typing import Optional, List
 
 from database import engine, SessionLocal, get_db, Base
 from models import Group, User, DailyQuestion, Vote, QuestionTemplate, GroupAnalytics
 from schemas import (
-    GroupCreate, GroupResponse, UserCreate, UserResponse,
+    GroupCreate, GroupResponse, GroupResponsePublic, UserCreate, UserResponse,
     DailyQuestionCreate, DailyQuestionResponse, VoteCreate
 )
 from websocket_manager import manager
@@ -114,11 +117,12 @@ def create_group(group: GroupCreate, db: Session = Depends(get_db)):
         group_id=db_group.group_id,
         name=db_group.name,
         invite_code=db_group.invite_code,
+        admin_token=db_group.admin_token,
         created_at=db_group.created_at,
         member_count=0
     )
 
-@app.get("/api/groups/{invite_code}", response_model=GroupResponse)
+@app.get("/api/groups/{invite_code}", response_model=GroupResponsePublic)
 def get_group_by_code(invite_code: str, db: Session = Depends(get_db)):
     """Get group info by invite code (for joining)"""
     group = db.query(Group).filter(Group.invite_code == invite_code).first()
@@ -128,7 +132,7 @@ def get_group_by_code(invite_code: str, db: Session = Depends(get_db)):
     
     member_count = db.query(User).filter(User.group_id == group.id).count()
     
-    return GroupResponse(
+    return GroupResponsePublic(
         id=group.id,
         group_id=group.group_id,
         name=group.name,
