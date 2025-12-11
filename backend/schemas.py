@@ -84,3 +84,31 @@ class QuestionTemplateResponse(BaseModel):
     option_b_template: str
     is_public: bool
     created_at: datetime
+
+
+# ============= Question Set Schemas =============
+
+class QuestionSetCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=150)
+    description: Optional[str] = None
+    template_ids: Optional[list[str]] = None
+    is_public: Optional[bool] = True
+
+
+class QuestionSetResponse(BaseModel):
+    set_id: str
+    name: str
+    description: Optional[str]
+    is_public: bool
+    templates: Optional[list[QuestionTemplateResponse]] = None
+    created_at: datetime
+
+
+class GroupQuestionSetsResponse(BaseModel):
+    group_id: str
+    question_sets: list[QuestionSetResponse]
+
+
+class GroupAssignSetsRequest(BaseModel):
+    question_set_ids: list[str]
+    replace: Optional[bool] = False

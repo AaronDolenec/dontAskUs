@@ -1,0 +1,22 @@
+[MASTER]
+ignore=venv,backend/venv,node_modules
+persistent=yes
+
+[MESSAGES CONTROL]
+# Disable checks that are noisy for this codebase; address others later
+disable=
+    missing-docstring,
+    too-many-arguments,
+    too-many-locals,
+    too-many-branches,
+    too-many-statements,
+    invalid-name,
+    duplicate-code,
+    line-too-long
+
+[FORMAT]
+max-line-length=120
+
+[REPORTS]
+output-format=text
+score=no

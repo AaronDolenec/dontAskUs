@@ -1,37 +1,81 @@
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query, Path
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query, Path, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, desc
-from datetime import datetime, timedelta, date
+from sqlalchemy import func, and_
+from datetime import datetime, date, timezone
+from contextlib import asynccontextmanager
+import threading
+import time
+import random
+import os
 import secrets
 import string
 import json
 import qrcode
 import base64
 import io
-from typing import Optional, List
+from typing import Optional
+import logging
+from fastapi.responses import JSONResponse
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
-from database import engine, SessionLocal, get_db, Base
-from models import Group, User, DailyQuestion, Vote, QuestionTemplate, GroupAnalytics
+from database import engine, get_db, Base, SessionLocal
+from models import Group, User, DailyQuestion, Vote, QuestionTemplate, QuestionSet, QuestionSetTemplate, GroupQuestionSet
 from schemas import (
     GroupCreate, GroupResponse, GroupResponsePublic, UserCreate, UserResponse,
-    DailyQuestionCreate, DailyQuestionResponse, VoteCreate
+    DailyQuestionCreate, DailyQuestionResponse, VoteCreate,
+    QuestionTemplateResponse, QuestionSetCreate, QuestionSetResponse, GroupQuestionSetsResponse, GroupAssignSetsRequest
 )
-from websocket_manager import manager
-import os
+from ws_manager import manager
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# Central logging configuration
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
 # Create tables
 Base.metadata.create_all(bind=engine)
 
+
+@asynccontextmanager
+async def lifespan(_app):
+    # Run startup tasks: seed default data and start the background scheduler
+    try:
+        # seed default templates and sets
+        try:
+            seed_default_question_sets()
+        except Exception as _e:
+            logging.exception("seed_default_question_sets failed during lifespan startup")
+
+        # start scheduler thread
+        try:
+            interval = int(os.getenv("SCHEDULE_INTERVAL_SECONDS", "86400"))
+            t = threading.Thread(target=_background_scheduler, args=(interval,), daemon=True)
+            t.start()
+        except Exception as _e:
+            logging.exception("background scheduler failed to start during lifespan startup")
+
+        yield
+    finally:
+        # no-op shutdown
+        return
+
 app = FastAPI(
-    title="AskUs Clone - Real-Time Q&A Platform",
+    title="DontAskUs - Real-Time Q&A Platform",
     version="1.0.0",
-    description="A self-hosted alternative to AskUs with real-time voting"
+    description="A self-hosted alternative to AskUs with real-time voting",
+    lifespan=lifespan,
 )
+
+# Rate limiter
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
 
 # CORS
 app.add_middleware(
@@ -41,6 +85,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Rate limiting error handler
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request, exc):
+    return JSONResponse(status_code=429, content={"detail": "Too many requests. Please try again later."})
 
 # ============= Helper Functions =============
 
@@ -85,28 +134,177 @@ def _generate_qr_code(data: str) -> str:
     
     return f"data:image/png;base64,{img_str}"
 
+def _get_vote_counts(question_id: int, db: Session) -> tuple:
+    """Get vote counts for a question. Returns (count_a, count_b)"""
+    vote_count_a = db.query(Vote).filter(
+        and_(Vote.question_id == question_id, Vote.answer == 'A')
+    ).count()
+    vote_count_b = db.query(Vote).filter(
+        and_(Vote.question_id == question_id, Vote.answer == 'B')
+    ).count()
+    return vote_count_a, vote_count_b
+
+def _get_user_by_session(session_token: str, db: Session) -> Optional[User]:
+    """Get user from session token"""
+    return db.query(User).filter(User.session_token == session_token).first()
+
+def _get_user_vote(user_id: int, question_id: int, db: Session) -> Optional[str]:
+    """Get user's vote answer for a question"""
+    vote = db.query(Vote).filter(
+        and_(Vote.question_id == question_id, Vote.user_id == user_id)
+    ).first()
+    return vote.answer if vote else None
+
+
+def require_group_admin(group_id: str = Path(...), x_admin_token: Optional[str] = Header(None), db: Session = Depends(get_db)):
+    """Dependency to ensure the caller is group admin via `X-Admin-Token` header."""
+    if not x_admin_token:
+        raise HTTPException(status_code=401, detail="Admin token required in 'X-Admin-Token' header")
+    group = db.query(Group).filter(Group.group_id == group_id).first()
+    if not group or group.admin_token != x_admin_token:
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+    return group
+
+
+def seed_default_question_sets():
+    db = SessionLocal()
+    try:
+        # Seed templates if none exist
+        if db.query(QuestionTemplate).count() == 0:
+            templates_data = [
+                {
+                    "category": "General",
+                    "question_text": "Do you prefer coffee or tea?",
+                    "option_a_template": "Coffee",
+                    "option_b_template": "Tea"
+                },
+                {
+                    "category": "Work",
+                    "question_text": "Do you feel productive today?",
+                    "option_a_template": "Yes",
+                    "option_b_template": "No"
+                },
+                {
+                    "category": "Fun",
+                    "question_text": "Would you rather go hiking or watch a movie?",
+                    "option_a_template": "Hiking",
+                    "option_b_template": "Movie"
+                }
+            ]
+            for t in templates_data:
+                qt = QuestionTemplate(
+                    category=t["category"],
+                    question_text=t["question_text"],
+                    option_a_template=t["option_a_template"],
+                    option_b_template=t["option_b_template"],
+                    is_public=True
+                )
+                db.add(qt)
+            db.commit()
+
+        # Seed a default question set if none exist
+        if db.query(QuestionSet).count() == 0:
+            templates = db.query(QuestionTemplate).all()
+            default_set = QuestionSet(
+                name="Default Set",
+                description="A starter set of questions",
+                is_public=True
+            )
+            db.add(default_set)
+            db.commit()
+            db.refresh(default_set)
+            for t in templates:
+                assoc = QuestionSetTemplate(question_set_id=default_set.id, template_id=t.id)
+                db.add(assoc)
+            db.commit()
+    finally:
+        db.close()
+
+
+def create_daily_questions_for_today():
+    db = SessionLocal()
+    try:
+        today = datetime.now(timezone.utc).date()
+        groups = db.query(Group).all()
+        for group in groups:
+            # skip if question exists for today
+            existing = db.query(DailyQuestion).filter(
+                and_(DailyQuestion.group_id == group.id, func.date(DailyQuestion.question_date) == today)
+            ).first()
+            if existing:
+                continue
+
+            # collect templates from active sets
+            assigned = db.query(GroupQuestionSet).filter(GroupQuestionSet.group_id == group.id, GroupQuestionSet.is_active == True).all()
+            template_candidates = []
+            for a in assigned:
+                s = db.get(QuestionSet, a.question_set_id)
+                if not s:
+                    continue
+                for assoc in db.query(QuestionSetTemplate).filter(QuestionSetTemplate.question_set_id == s.id).all():
+                    t = db.get(QuestionTemplate, assoc.template_id)
+                    if t:
+                        template_candidates.append(t)
+
+            # fallback to any public template if none assigned
+            if not template_candidates:
+                template_candidates = db.query(QuestionTemplate).filter(QuestionTemplate.is_public == True).all()
+
+            if not template_candidates:
+                continue
+
+            tmpl = random.choice(template_candidates)
+            dq = DailyQuestion(
+                group_id=group.id,
+                template_id=tmpl.id,
+                question_text=tmpl.question_text,
+                option_a=tmpl.option_a_template,
+                option_b=tmpl.option_b_template
+            )
+            db.add(dq)
+        db.commit()
+    except Exception:
+        logging.exception("create_daily_questions_for_today failed, rolling back DB")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _background_scheduler(interval_seconds: int = 86400):
+    # run once at startup
+    try:
+        create_daily_questions_for_today()
+    except Exception:
+        logging.exception("Initial create_daily_questions_for_today call failed in scheduler")
+    while True:
+        time.sleep(interval_seconds)
+        try:
+            create_daily_questions_for_today()
+        except Exception:
+            logging.exception("Scheduled create_daily_questions_for_today call failed in scheduler")
+
+
+# Scheduler is started in the application's lifespan handler
+
 # ============= Group Routes =============
 
 @app.post("/api/groups", response_model=GroupResponse)
-def create_group(group: GroupCreate, db: Session = Depends(get_db)):
+@limiter.limit("20/minute")
+def create_group(request: Request, group: GroupCreate, db: Session = Depends(get_db)):
     """Create a new group"""
     invite_code = generate_invite_code()
-    admin_token = generate_admin_token()
-    
+    admin_token = generate_admin_token() 
     # Ensure unique invite code
     while db.query(Group).filter(Group.invite_code == invite_code).first():
-        invite_code = generate_invite_code()
-    
+        invite_code = generate_invite_code() 
     db_group = Group(
         name=group.name,
         invite_code=invite_code,
         admin_token=admin_token
-    )
-    
+    ) 
     db.add(db_group)
     db.commit()
     db.refresh(db_group)
-    
     # Generate QR code
     qr_data = _generate_qr_code(invite_code)
     db_group.qr_data = qr_data
@@ -123,7 +321,8 @@ def create_group(group: GroupCreate, db: Session = Depends(get_db)):
     )
 
 @app.get("/api/groups/{invite_code}", response_model=GroupResponsePublic)
-def get_group_by_code(invite_code: str, db: Session = Depends(get_db)):
+@limiter.limit("200/minute")
+def get_group_by_code(request: Request, invite_code: str, db: Session = Depends(get_db)):
     """Get group info by invite code (for joining)"""
     group = db.query(Group).filter(Group.invite_code == invite_code).first()
     
@@ -166,7 +365,8 @@ def get_group_full_info(
 # ============= User Routes =============
 
 @app.post("/api/users/join", response_model=UserResponse)
-def join_group(user: UserCreate, db: Session = Depends(get_db)):
+@limiter.limit("30/minute")
+def join_group(request: Request, user: UserCreate, db: Session = Depends(get_db)):
     """Join a group with invite code and create user session"""
     
     # Find group by invite code
@@ -218,9 +418,10 @@ def join_group(user: UserCreate, db: Session = Depends(get_db)):
     )
 
 @app.get("/api/users/validate-session/{session_token}")
-def validate_session(session_token: str, db: Session = Depends(get_db)):
+@limiter.limit("200/minute")
+def validate_session(request: Request, session_token: str, db: Session = Depends(get_db)):
     """Validate user session token"""
-    user = db.query(User).filter(User.session_token == session_token).first()
+    user = _get_user_by_session(session_token, db)
     
     if not user:
         raise HTTPException(status_code=401, detail="Invalid session")
@@ -235,7 +436,8 @@ def validate_session(session_token: str, db: Session = Depends(get_db)):
     }
 
 @app.get("/api/groups/{group_id}/members")
-def get_group_members(group_id: str, db: Session = Depends(get_db)):
+@limiter.limit("200/minute")
+def get_group_members(request: Request, group_id: str, db: Session = Depends(get_db)):
     """Get all members in a group"""
     group = db.query(Group).filter(Group.group_id == group_id).first()
     
@@ -259,19 +461,19 @@ def get_group_members(group_id: str, db: Session = Depends(get_db)):
 # ============= Daily Question Routes =============
 
 @app.post("/api/groups/{group_id}/questions", response_model=DailyQuestionResponse)
+@limiter.limit("10/minute")
 def create_daily_question(
-    group_id: str = Path(...),
+    request: Request,
+    group: Group = Depends(require_group_admin),
     question: DailyQuestionCreate = None,
     db: Session = Depends(get_db)
 ):
     """Create a new daily question (admin endpoint)"""
     
-    group = db.query(Group).filter(Group.group_id == group_id).first()
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
+    # `group` is provided by the `require_group_admin` dependency and validated already
     
     # Check if question already exists for today
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     existing = db.query(DailyQuestion).filter(
         and_(
             DailyQuestion.group_id == group.id,
@@ -306,8 +508,197 @@ def create_daily_question(
         total_votes=0
     )
 
+
+# ============= Question Set Endpoints =============
+
+
+@app.post("/api/question-sets", response_model=QuestionSetResponse)
+def create_question_set(
+    request: Request,
+    payload: QuestionSetCreate,
+    db: Session = Depends(get_db)
+):
+    """Create a new question set (contains templates)"""
+    qs = QuestionSet(
+        name=payload.name,
+        description=payload.description,
+        is_public=payload.is_public
+    )
+    db.add(qs)
+    db.commit()
+    db.refresh(qs)
+
+    # attach templates if provided (template_ids are template_id strings)
+    if payload.template_ids:
+        for tid in payload.template_ids:
+            tmpl = db.query(QuestionTemplate).filter(QuestionTemplate.template_id == tid).first()
+            if tmpl:
+                assoc = QuestionSetTemplate(question_set_id=qs.id, template_id=tmpl.id)
+                db.add(assoc)
+        db.commit()
+
+    # build response
+    templates = []
+    for assoc in db.query(QuestionSetTemplate).filter(QuestionSetTemplate.question_set_id == qs.id).all():
+        t = db.get(QuestionTemplate, assoc.template_id)
+        if t:
+            templates.append(QuestionTemplateResponse(
+                template_id=t.template_id,
+                category=t.category,
+                question_text=t.question_text,
+                option_a_template=t.option_a_template,
+                option_b_template=t.option_b_template,
+                is_public=t.is_public,
+                created_at=t.created_at
+            ))
+
+    return QuestionSetResponse(
+        set_id=qs.set_id,
+        name=qs.name,
+        description=qs.description,
+        is_public=qs.is_public,
+        templates=templates,
+        created_at=qs.created_at
+    )
+
+
+@app.get("/api/question-sets")
+def list_public_question_sets(db: Session = Depends(get_db)):
+    sets = db.query(QuestionSet).filter(QuestionSet.is_public == True).all()
+    out = []
+    for s in sets:
+        templates = []
+        for assoc in db.query(QuestionSetTemplate).filter(QuestionSetTemplate.question_set_id == s.id).all():
+            t = db.get(QuestionTemplate, assoc.template_id)
+            if t:
+                templates.append({
+                    "template_id": t.template_id,
+                    "category": t.category,
+                    "question_text": t.question_text,
+                    "option_a_template": t.option_a_template,
+                    "option_b_template": t.option_b_template,
+                    "is_public": t.is_public,
+                    "created_at": t.created_at
+                })
+        out.append({
+            "set_id": s.set_id,
+            "name": s.name,
+            "description": s.description,
+            "is_public": s.is_public,
+            "templates": templates,
+            "created_at": s.created_at
+        })
+    return out
+
+
+@app.get("/api/question-sets/{set_id}")
+def get_question_set(set_id: str, db: Session = Depends(get_db)):
+    qs = db.query(QuestionSet).filter(QuestionSet.set_id == set_id).first()
+    if not qs:
+        raise HTTPException(status_code=404, detail="Question set not found")
+    templates = []
+    for assoc in db.query(QuestionSetTemplate).filter(QuestionSetTemplate.question_set_id == qs.id).all():
+        t = db.get(QuestionTemplate, assoc.template_id)
+        if t:
+            templates.append({
+                "template_id": t.template_id,
+                "category": t.category,
+                "question_text": t.question_text,
+                "option_a_template": t.option_a_template,
+                "option_b_template": t.option_b_template,
+                "is_public": t.is_public,
+                "created_at": t.created_at
+            })
+    return {
+        "set_id": qs.set_id,
+        "name": qs.name,
+        "description": qs.description,
+        "is_public": qs.is_public,
+        "templates": templates,
+        "created_at": qs.created_at
+    }
+
+
+@app.post("/api/groups/{group_id}/question-sets")
+def assign_question_sets_to_group(
+    payload: GroupAssignSetsRequest,
+    group: Group = Depends(require_group_admin),
+    db: Session = Depends(get_db)
+):
+    """Assign question sets to a group. Requires admin_token of the group in query param."""
+    # `group` is validated by require_group_admin
+    if payload.replace:
+        db.query(GroupQuestionSet).filter(GroupQuestionSet.group_id == group.id).delete()
+        db.commit()
+
+    for set_uuid in payload.question_set_ids:
+        qs = db.query(QuestionSet).filter(QuestionSet.set_id == set_uuid).first()
+        if not qs:
+            continue
+        existing = db.query(GroupQuestionSet).filter(
+            GroupQuestionSet.group_id == group.id,
+            GroupQuestionSet.question_set_id == qs.id
+        ).first()
+        if existing:
+            existing.is_active = True
+        else:
+            gq = GroupQuestionSet(group_id=group.id, question_set_id=qs.id, is_active=True)
+            db.add(gq)
+    db.commit()
+
+    # return current group sets
+    assigned = db.query(GroupQuestionSet).filter(GroupQuestionSet.group_id == group.id, GroupQuestionSet.is_active == True).all()
+    result_sets = []
+    for a in assigned:
+        s = db.get(QuestionSet, a.question_set_id)
+        if s:
+            result_sets.append({
+                "set_id": s.set_id,
+                "name": s.name,
+                "description": s.description,
+                "is_public": s.is_public
+            })
+    return {"group_id": group.group_id, "question_sets": result_sets}
+
+
+@app.get("/api/groups/{group_id}/question-sets", response_model=GroupQuestionSetsResponse)
+def get_group_question_sets(group_id: str, db: Session = Depends(get_db)):
+    group = db.query(Group).filter(Group.group_id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    assigned = db.query(GroupQuestionSet).filter(GroupQuestionSet.group_id == group.id, GroupQuestionSet.is_active == True).all()
+    result_sets = []
+    for a in assigned:
+        s = db.get(QuestionSet, a.question_set_id)
+        if s:
+            # include templates
+            templates = []
+            for assoc in db.query(QuestionSetTemplate).filter(QuestionSetTemplate.question_set_id == s.id).all():
+                t = db.get(QuestionTemplate, assoc.template_id)
+                if t:
+                    templates.append(QuestionTemplateResponse(
+                        template_id=t.template_id,
+                        category=t.category,
+                        question_text=t.question_text,
+                        option_a_template=t.option_a_template,
+                        option_b_template=t.option_b_template,
+                        is_public=t.is_public,
+                        created_at=t.created_at
+                    ))
+            result_sets.append(QuestionSetResponse(
+                set_id=s.set_id,
+                name=s.name,
+                description=s.description,
+                is_public=s.is_public,
+                templates=templates,
+                created_at=s.created_at
+            ))
+    return GroupQuestionSetsResponse(group_id=group.group_id, question_sets=result_sets)
+
 @app.get("/api/groups/{group_id}/questions/today")
+@limiter.limit("200/minute")
 def get_todays_question(
+    request: Request,
     group_id: str = Path(...),
     session_token: Optional[str] = Query(None),
     db: Session = Depends(get_db)
@@ -318,7 +709,7 @@ def get_todays_question(
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     question = db.query(DailyQuestion).filter(
         and_(
             DailyQuestion.group_id == group.id,
@@ -331,25 +722,16 @@ def get_todays_question(
         raise HTTPException(status_code=404, detail="No question for today")
     
     # Count votes
-    vote_count_a = db.query(Vote).filter(
-        and_(Vote.question_id == question.id, Vote.answer == 'A')
-    ).count()
-    vote_count_b = db.query(Vote).filter(
-        and_(Vote.question_id == question.id, Vote.answer == 'B')
-    ).count()
+    vote_count_a, vote_count_b = _get_vote_counts(question.id, db)
     
     # Get user's vote if authenticated
     user_vote = None
     user_streak = 0
     longest_streak = 0
     if session_token:
-        user = db.query(User).filter(User.session_token == session_token).first()
+        user = _get_user_by_session(session_token, db)
         if user:
-            vote = db.query(Vote).filter(
-                and_(Vote.question_id == question.id, Vote.user_id == user.id)
-            ).first()
-            if vote:
-                user_vote = vote.answer
+            user_vote = _get_user_vote(user.id, question.id, db)
             user_streak = user.answer_streak
             longest_streak = user.longest_answer_streak
     
@@ -372,7 +754,9 @@ def get_todays_question(
 # ============= Voting Routes =============
 
 @app.post("/api/questions/{question_id}/vote")
+@limiter.limit("100/minute")
 def vote_on_question(
+    request: Request,
     question_id: str = Path(...),
     vote: VoteCreate = None,
     session_token: Optional[str] = Query(None),
@@ -383,7 +767,7 @@ def vote_on_question(
     if not session_token:
         raise HTTPException(status_code=401, detail="Session token required")
     
-    user = db.query(User).filter(User.session_token == session_token).first()
+    user = _get_user_by_session(session_token, db)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid session")
     
@@ -401,7 +785,7 @@ def vote_on_question(
     if existing_vote:
         # Update existing vote
         existing_vote.answer = vote.answer
-        existing_vote.voted_at = datetime.utcnow()
+        existing_vote.voted_at = datetime.now(timezone.utc)
     else:
         # Create new vote
         db_vote = Vote(
@@ -428,17 +812,12 @@ def vote_on_question(
         if user.answer_streak > user.longest_answer_streak:
             user.longest_answer_streak = user.answer_streak
         
-        user.last_answer_date = datetime.utcnow()
+        user.last_answer_date = datetime.now(timezone.utc)
     
     db.commit()
     
     # Get updated vote counts
-    vote_count_a = db.query(Vote).filter(
-        and_(Vote.question_id == question.id, Vote.answer == 'A')
-    ).count()
-    vote_count_b = db.query(Vote).filter(
-        and_(Vote.question_id == question.id, Vote.answer == 'B')
-    ).count()
+    vote_count_a, vote_count_b = _get_vote_counts(question.id, db)
     
     return {
         "success": True,
@@ -477,9 +856,7 @@ async def websocket_endpoint(
                         DailyQuestion.question_id == question_id
                     ).first()
                     if question:
-                        user = db.query(User).filter(
-                            User.session_token == message.get("session_token")
-                        ).first()
+                        user = _get_user_by_session(message.get("session_token"), db)
                         if user:
                             existing_vote = db.query(Vote).filter(
                                 and_(
@@ -501,18 +878,7 @@ async def websocket_endpoint(
                             db.commit()
                             
                             # Get updated counts
-                            vote_a = db.query(Vote).filter(
-                                and_(
-                                    Vote.question_id == question.id,
-                                    Vote.answer == 'A'
-                                )
-                            ).count()
-                            vote_b = db.query(Vote).filter(
-                                and_(
-                                    Vote.question_id == question.id,
-                                    Vote.answer == 'B'
-                                )
-                            ).count()
+                            vote_a, vote_b = _get_vote_counts(question.id, db)
                             
                             # Broadcast to all users
                             await manager.broadcast_update(group_id, question_id, {
@@ -528,36 +894,31 @@ async def websocket_endpoint(
             elif message.get("type") == "ping":
                 await websocket.send_text(json.dumps({
                     "type": "pong",
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 }))
     
     except WebSocketDisconnect:
         manager.disconnect(group_id, question_id, websocket)
-    except Exception as e:
-        print(f"WebSocket error: {e}")
+    except Exception:
+        logging.exception("WebSocket handler error")
         manager.disconnect(group_id, question_id, websocket)
 
 # ============= Admin Routes =============
 
-@app.get("/api/admin/groups/{admin_token}/leaderboard")
+@app.get("/api/admin/groups/{group_id}/leaderboard")
+@limiter.limit("60/minute")
 def get_leaderboard(
-    admin_token: str = Path(...),
+    request: Request,
+    group: Group = Depends(require_group_admin),
     db: Session = Depends(get_db)
 ):
-    """Get group leaderboard by answer streak"""
-    group = db.query(Group).filter(Group.admin_token == admin_token).first()
-    
-    if not group:
-        raise HTTPException(status_code=401, detail="Invalid admin token")
-    
-    # Get all members with their streaks
+    """Get group leaderboard by answer streak (admin only)"""
     members = db.query(User).filter(User.group_id == group.id).all()
     leaderboard = sorted(
         members,
         key=lambda x: (x.answer_streak, x.longest_answer_streak),
         reverse=True
     )
-    
     return [
         {
             "display_name": m.display_name,
@@ -570,7 +931,7 @@ def get_leaderboard(
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 if __name__ == "__main__":
     import uvicorn
