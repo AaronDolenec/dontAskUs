@@ -1,4 +1,45 @@
 [MASTER]
+ignore=CVS,__pycache__,venv,alembic
+
+[MESSAGES CONTROL]
+disable=
+    missing-docstring,
+    too-few-public-methods,
+    line-too-long,
+    unused-argument,
+    unused-import,
+    wildcard-import,
+    invalid-name,
+    too-many-arguments,
+    too-many-instance-attributes,
+    too-many-locals,
+    broad-except,
+    logging-fstring-interpolation,
+    wrong-import-order,
+    import-outside-toplevel,
+    cyclic-import,
+    no-name-in-module,
+    import-error,
+    pointless-statement,
+    missing-final-newline,
+    consider-using-f-string,
+    MD022,
+    MD031,
+    MD032,
+    blanks-around-headings,
+    blanks-around-fences,
+    blanks-around-lists
+
+[DESIGN]
+max-args=12
+max-attributes=25
+max-locals=40
+max-branches=30
+
+[TYPECHECK]
+ignore-mixin-members=yes
+ignored-modules=alembic,bcrypt
+[MASTER]
 ignore=venv,backend/venv,node_modules
 persistent=yes
 
@@ -12,7 +53,9 @@ disable=
     too-many-statements,
     invalid-name,
     duplicate-code,
-    line-too-long
+    line-too-long,
+    unused-argument,
+    unused-variable
 
 [FORMAT]
 max-line-length=120

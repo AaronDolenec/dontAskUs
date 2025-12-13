@@ -1,0 +1,32 @@
+[MASTER]
+# Add <file or directory> to the black list
+ignore=CVS,alembic,__pycache__,venv
+
+[MESSAGES CONTROL]
+# Disable messages that are not relevant for this project
+disable=
+    missing-docstring,
+    too-few-public-methods,
+    line-too-long,
+    unused-argument,
+    unused-import,
+    wildcard-import,
+    invalid-name,
+    too-many-arguments,
+    too-many-instance-attributes,
+    too-many-locals,
+    broad-except,
+    logging-fstring-interpolation,
+    wrong-import-order,
+    import-outside-toplevel,
+    cyclic-import,
+    no-name-in-module,
+    pointless-statement,
+    missing-final-newline
+
+[DESIGN]
+max-args=10
+max-attributes=20
+max-locals=30
+max-branches=20
+

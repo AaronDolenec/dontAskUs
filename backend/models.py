@@ -3,7 +3,33 @@ from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 import uuid
 import enum
+try:
+    import bcrypt
+except ImportError:
+    bcrypt = None  # pylint: disable=invalid-name
 from database import Base
+
+
+def hash_token(token: str) -> str:
+    """Hash a token using bcrypt for secure storage."""
+    if bcrypt is None:
+        raise ImportError("bcrypt is not installed. Install with: pip install bcrypt")
+    return bcrypt.hashpw(token.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')  # pylint: disable=no-member
+
+
+def verify_token(token: str, hashed_token: str) -> bool:
+    """Verify a plaintext token against its bcrypt hash."""
+    if bcrypt is None:
+        raise ImportError("bcrypt is not installed. Install with: pip install bcrypt")
+    return bcrypt.checkpw(token.encode('utf-8'), hashed_token.encode('utf-8'))  # pylint: disable=no-member
+
+
+class QuestionTypeEnum(enum.Enum):
+    """Question types: binary voting, single choice, or free text"""
+    BINARY_VOTE = "binary_vote"
+    SINGLE_CHOICE = "single_choice"
+    FREE_TEXT = "free_text"
+
 
 class QuestionTemplate(Base):
     __tablename__ = "question_templates"
@@ -12,8 +38,9 @@ class QuestionTemplate(Base):
     template_id = Column(String(36), unique=True, default=lambda: str(uuid.uuid4()))
     category = Column(String(50))
     question_text = Column(String(255))
-    option_a_template = Column(String(100))
-    option_b_template = Column(String(100))
+    option_a_template = Column(String(100), nullable=True)
+    option_b_template = Column(String(100), nullable=True)
+    question_type = Column(Enum(QuestionTypeEnum), default=QuestionTypeEnum.BINARY_VOTE)
     is_public = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -28,13 +55,15 @@ class Group(Base):
     name = Column(String(100), index=True)
     invite_code = Column(String(8), unique=True, index=True)
     qr_data = Column(Text)
-    admin_token = Column(String(255), unique=True)
+    admin_token = Column(String(255), unique=True)  # Hashed token
+    creator_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
-    members = relationship("User", back_populates="group", cascade="all, delete-orphan")
+    members = relationship("User", back_populates="group", cascade="all, delete-orphan", foreign_keys="User.group_id")
     daily_questions = relationship("DailyQuestion", back_populates="group", cascade="all, delete-orphan")
     analytics = relationship("GroupAnalytics", back_populates="group", cascade="all, delete-orphan")
+    creator = relationship("User", foreign_keys=[creator_id], backref="created_groups")
 
 class GroupAnalytics(Base):
     __tablename__ = "group_analytics"
@@ -53,6 +82,7 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         UniqueConstraint('group_id', 'session_token', name='uq_group_session'),
+        UniqueConstraint('group_id', 'display_name', name='uq_group_display_name'),
         Index('idx_user_session', 'session_token'),
     )
     
@@ -60,15 +90,17 @@ class User(Base):
     user_id = Column(String(36), unique=True, default=lambda: str(uuid.uuid4()))
     group_id = Column(Integer, ForeignKey("groups.id"))
     display_name = Column(String(50))
-    session_token = Column(String(255), unique=True)
+    session_token = Column(String(255), unique=True)  # Hashed token
+    session_token_expires_at = Column(DateTime, nullable=True)  # Token expiry
     color_avatar = Column(String(7), default="#3498db")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     answer_streak = Column(Integer, default=0)
     longest_answer_streak = Column(Integer, default=0)
     last_answer_date = Column(DateTime, default=None)
     
-    group = relationship("Group", back_populates="members")
+    group = relationship("Group", back_populates="members", foreign_keys=[group_id])
     votes = relationship("Vote", back_populates="user", cascade="all, delete-orphan")
+    group_streaks = relationship("UserGroupStreak", back_populates="user", cascade="all, delete-orphan")
 
 class DailyQuestion(Base):
     __tablename__ = "daily_questions"
@@ -82,8 +114,9 @@ class DailyQuestion(Base):
     group_id = Column(Integer, ForeignKey("groups.id"))
     template_id = Column(Integer, ForeignKey("question_templates.id"), nullable=True)
     question_text = Column(String(255))
-    option_a = Column(String(100))
-    option_b = Column(String(100))
+    option_a = Column(String(100), nullable=True)
+    option_b = Column(String(100), nullable=True)
+    question_type = Column(Enum(QuestionTypeEnum), default=QuestionTypeEnum.BINARY_VOTE)
     question_date = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -143,8 +176,28 @@ class Vote(Base):
     vote_id = Column(String(36), unique=True, default=lambda: str(uuid.uuid4()))
     question_id = Column(Integer, ForeignKey("daily_questions.id"))
     user_id = Column(Integer, ForeignKey("users.id"))
-    answer = Column(String(1))  # 'A' or 'B'
+    answer = Column(String(1), nullable=True)  # 'A' or 'B' for binary votes
+    text_answer = Column(Text, nullable=True)  # For free-text answers
     voted_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     question = relationship("DailyQuestion", back_populates="votes")
     user = relationship("User", back_populates="votes")
+
+
+class UserGroupStreak(Base):
+    __tablename__ = "user_group_streaks"
+    __table_args__ = (
+        UniqueConstraint('user_id', 'group_id', name='uq_user_group_streak'),
+        Index('idx_user_group', 'user_id', 'group_id'),
+    )
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    group_id = Column(Integer, ForeignKey("groups.id"))
+    current_streak = Column(Integer, default=0)
+    longest_streak = Column(Integer, default=0)
+    last_answer_date = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    
+    user = relationship("User", back_populates="group_streaks")
+    group = relationship("Group", backref="user_streaks")

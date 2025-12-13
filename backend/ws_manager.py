@@ -2,6 +2,7 @@ from typing import Set, Dict
 import json
 import logging
 from datetime import datetime, timezone
+# pylint: disable=broad-except
 
 
 class ConnectionManager:
@@ -51,7 +52,7 @@ class ConnectionManager:
             for connection in connections:
                 try:
                     await connection.send_text(message)
-                except Exception:
+                except (OSError, RuntimeError):
                     logging.exception("Error sending websocket message; removing connection")
                     self.active_connections[group_id][question_id].discard(connection)
 
