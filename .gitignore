@@ -14,7 +14,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# Don't ignore lib/ - needed for admin-ui/src/lib
+# lib/
 lib64/
 parts/
 sdist/
