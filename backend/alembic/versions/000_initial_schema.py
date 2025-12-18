@@ -19,6 +19,22 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Create initial schema with all tables."""
+    # Create admin_users table
+    op.create_table(
+        'admin_users',
+        sa.Column('id', sa.Integer(), nullable=False),
+        sa.Column('username', sa.String(50), nullable=False),
+        sa.Column('password_hash', sa.String(255), nullable=False),
+        sa.Column('totp_secret', sa.String(32), nullable=False),
+        sa.Column('temp_token', sa.String(64), nullable=True),
+        sa.Column('is_active', sa.Boolean(), nullable=True),
+        sa.Column('last_login', sa.DateTime(), nullable=True),
+        sa.Column('created_at', sa.DateTime(), nullable=True),
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('username')
+    )
+    op.create_index('ix_admin_users_username', 'admin_users', ['username'])
+    
     # Create question_templates table
     op.create_table(
         'question_templates',
@@ -28,7 +44,7 @@ def upgrade() -> None:
         sa.Column('question_text', sa.String(255), nullable=True),
         sa.Column('option_a_template', sa.String(100), nullable=True),
         sa.Column('option_b_template', sa.String(100), nullable=True),
-        sa.Column('question_type', sa.Enum('BINARY_VOTE', 'SINGLE_CHOICE', 'FREE_TEXT', name='questiontypeenum'), nullable=True),
+        sa.Column('question_type', sa.Enum('BINARY_VOTE', 'SINGLE_CHOICE', 'FREE_TEXT', 'MEMBER_CHOICE', 'DUO_CHOICE', name='questiontypeenum'), nullable=True),
         sa.Column('is_public', sa.Boolean(), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=True),
         sa.PrimaryKeyConstraint('id'),
@@ -106,15 +122,19 @@ def upgrade() -> None:
         sa.Column('question_text', sa.String(255), nullable=True),
         sa.Column('option_a', sa.String(100), nullable=True),
         sa.Column('option_b', sa.String(100), nullable=True),
+        sa.Column('options', sa.Text(), nullable=True),
+        sa.Column('question_type', sa.Enum('BINARY_VOTE', 'SINGLE_CHOICE', 'FREE_TEXT', 'MEMBER_CHOICE', 'DUO_CHOICE', name='questiontypeenum'), nullable=True),
+        sa.Column('question_date', sa.DateTime(), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=True),
-        sa.Column('expires_at', sa.DateTime(), nullable=True),
         sa.Column('is_active', sa.Boolean(), nullable=True),
         sa.ForeignKeyConstraint(['group_id'], ['groups.id']),
         sa.ForeignKeyConstraint(['template_id'], ['question_templates.id']),
         sa.PrimaryKeyConstraint('id'),
-        sa.UniqueConstraint('question_id')
+        sa.UniqueConstraint('question_id'),
+        sa.UniqueConstraint('group_id', 'question_date', name='uq_group_date')
     )
     op.create_index('ix_daily_questions_question_id', 'daily_questions', ['question_id'])
+    op.create_index('idx_group_date', 'daily_questions', ['group_id', 'question_date'])
     
     # Create votes table
     op.create_table(
@@ -123,15 +143,18 @@ def upgrade() -> None:
         sa.Column('vote_id', sa.String(36), nullable=False),
         sa.Column('question_id', sa.Integer(), nullable=True),
         sa.Column('user_id', sa.Integer(), nullable=True),
-        sa.Column('vote', sa.String(50), nullable=True),
-        sa.Column('created_at', sa.DateTime(), nullable=True),
+        sa.Column('answer', sa.Text(), nullable=True),
+        sa.Column('text_answer', sa.Text(), nullable=True),
+        sa.Column('voted_at', sa.DateTime(), nullable=True),
         sa.ForeignKeyConstraint(['question_id'], ['daily_questions.id']),
         sa.ForeignKeyConstraint(['user_id'], ['users.id']),
         sa.PrimaryKeyConstraint('id'),
         sa.UniqueConstraint('vote_id'),
-        sa.UniqueConstraint('question_id', 'user_id', name='uq_user_question')
+        sa.UniqueConstraint('question_id', 'user_id', name='uq_question_user')
     )
     op.create_index('ix_votes_vote_id', 'votes', ['vote_id'])
+    op.create_index('idx_vote_question', 'votes', ['question_id'])
+    op.create_index('idx_vote_user', 'votes', ['user_id'])
     
     # Create question_sets table
     op.create_table(
@@ -180,7 +203,8 @@ def upgrade() -> None:
         sa.Column('group_id', sa.Integer(), nullable=True),
         sa.Column('current_streak', sa.Integer(), nullable=True),
         sa.Column('longest_streak', sa.Integer(), nullable=True),
-        sa.Column('last_activity', sa.DateTime(), nullable=True),
+        sa.Column('last_answer_date', sa.DateTime(), nullable=True),
+        sa.Column('updated_at', sa.DateTime(), nullable=True),
         sa.ForeignKeyConstraint(['group_id'], ['groups.id']),
         sa.ForeignKeyConstraint(['user_id'], ['users.id']),
         sa.PrimaryKeyConstraint('id')
@@ -199,3 +223,4 @@ def downgrade() -> None:
     op.drop_table('users')
     op.drop_table('groups')
     op.drop_table('question_templates')
+    op.drop_table('admin_users')

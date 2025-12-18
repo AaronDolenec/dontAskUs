@@ -3,6 +3,8 @@ version: '3.8'
 services:
   db:
     image: postgres:15
+    env_file:
+      - .env
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-qauser}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-securepassword123}
@@ -31,6 +33,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    env_file:
+      - .env
     depends_on:
       db:
         condition: service_healthy
@@ -44,12 +48,37 @@ services:
       SECRET_KEY: "${SECRET_KEY:-your-super-secret-key-change-in-production}"
       SESSION_TOKEN_EXPIRY_DAYS: "${SESSION_TOKEN_EXPIRY_DAYS:-7}"
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000}"
+      ADMIN_INITIAL_USERNAME: "${ADMIN_INITIAL_USERNAME:-admin}"
+      ADMIN_INITIAL_PASSWORD: "${ADMIN_INITIAL_PASSWORD:-changeme123}"
     volumes:
       - .:/app
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
     working_dir: /app
+
+  admin-ui:
+    build:
+      context: ./admin-ui
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      VITE_API_URL: "http://localhost:8000"
+    volumes:
+      - ./admin-ui:/app
+      - /app/node_modules
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
 
 volumes:
   db_data:

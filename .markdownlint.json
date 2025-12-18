@@ -1,0 +1,7 @@
+{
+  "MD013": false,
+  "ignores": [
+    "**/venv/**",
+    "backend/venv/**"
+  ]
+}

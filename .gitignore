@@ -205,3 +205,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Admin UI (Vite)
+backend/admin-ui/node_modules/
+backend/admin-ui/dist/
+backend/admin_ui_dist/
+*.log
+*.DS_Store

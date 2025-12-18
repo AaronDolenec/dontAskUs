@@ -1,0 +1,113 @@
+.account {
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.account h1 {
+  margin-bottom: 30px;
+  color: var(--text-primary);
+}
+
+.account h2 {
+  margin-bottom: 20px;
+  color: var(--text-primary);
+  font-size: 18px;
+}
+
+.section {
+  background: var(--panel-bg);
+  padding: 20px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--shadow-sm);
+}
+
+.profile-info p {
+  margin-bottom: 10px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.profile-info strong {
+  color: var(--text-primary);
+}
+
+.form-group {
+  margin-bottom: 15px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.form-group input,
+.form-group textarea {
+  width: 100%;
+}
+
+.section button {
+  background: var(--primary-color);
+  color: #fff;
+  padding: 10px 20px;
+  width: 100%;
+  margin-top: 10px;
+}
+
+.section button:last-child {
+  margin-top: 10px;
+}
+
+.section button:hover:not(:disabled) { opacity: 0.95; }
+
+.section button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.error {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fecaca;
+  padding: 12px;
+  border-radius: 4px;
+  margin-bottom: 15px;
+  font-size: 14px;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
+.success {
+  background: rgba(16, 185, 129, 0.12);
+  color: #bbf7d0;
+  padding: 12px;
+  border-radius: 4px;
+  margin-bottom: 15px;
+  font-size: 14px;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.qr-container {
+  text-align: center;
+  margin: 20px 0;
+  padding: 20px;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+}
+
+.qr-container canvas {
+  display: inline-block;
+}
+
+code {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-weight: 600;
+  font-size: 12px;
+}

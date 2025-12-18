@@ -24,6 +24,20 @@ else
   echo "Migrations completed or already applied!"
 fi
 
+# Create initial admin user from env vars if none exists
+echo "Ensuring initial admin user exists (env-driven)..."
+if python create_admin_user.py; then
+  echo "Admin user creation completed successfully!"
+else
+  echo "WARNING: Failed to create admin user. Error details:"
+  python create_admin_user.py 2>&1 || echo "Admin user creation failed!"
+fi
+
 # Start the application
-echo "Starting FastAPI application..."
+echo ""
+echo "════════════════════════════════════════════════════════════════════════════════"
+echo "Access the Admin UI at: http://localhost:5173/admin"
+echo "API Documentation: http://localhost:8000/docs"
+echo "════════════════════════════════════════════════════════════════════════════════"
+echo ""
 exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload

@@ -14,7 +14,21 @@
     "**/node_modules": true
   },
   "python.analysis.diagnosticMode": "openFilesOnly",
-  "python.analysis.extraPaths": [
-    "./backend"
-  ]
+  "python.analysis.extraPaths": ["./backend"],
+  "[markdown]": {
+    "editor.wordWrap": "on",
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.formatOnSave": true
+  },
+  "editor.formatOnSave": true,
+  "prettier.proseWrap": "always",
+  "prettier.printWidth": 100,
+  "[markdown]": {
+    "editor.wordWrap": "on",
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.formatOnSave": true
+  },
+  "python.linting.enabled": false,
+  "pylint.args": ["--disable=all"],
+  "pylance.analysis.diagnosticMode": "off"
 }

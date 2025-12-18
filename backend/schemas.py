@@ -1,8 +1,26 @@
+
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional
+from typing import Optional, List, Union
 from datetime import datetime
 from enum import Enum
 import re
+
+# ============= Admin Schemas =============
+class AdminLoginRequest(BaseModel):
+    username: str
+    password: str
+
+class AdminLoginResponse(BaseModel):
+    temp_token: str
+    message: str = "2FA required"
+
+class Admin2FARequest(BaseModel):
+    temp_token: str
+    totp_code: str
+
+class Admin2FAResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
 
 
 def sanitize_string(value: str, max_length: int = 1000) -> str:
@@ -21,6 +39,8 @@ class QuestionTypeEnum(str, Enum):
     BINARY_VOTE = "binary_vote"
     SINGLE_CHOICE = "single_choice"
     FREE_TEXT = "free_text"
+    MEMBER_CHOICE = "member_choice"
+    DUO_CHOICE = "duo_choice"
 
 
 # ============= Group Schemas =============
@@ -106,9 +126,11 @@ class UserResponse(BaseModel):
 
 class DailyQuestionCreate(BaseModel):
     question_text: str = Field(..., min_length=1, max_length=255)
+    question_type: QuestionTypeEnum = QuestionTypeEnum.MEMBER_CHOICE
+    question_set_id: Optional[str] = None  # Optional; defaults to "Spicy" set
     option_a: Optional[str] = Field(None, max_length=100)
     option_b: Optional[str] = Field(None, max_length=100)
-    question_type: QuestionTypeEnum = QuestionTypeEnum.BINARY_VOTE
+    allow_multiple: bool = False
     
     @field_validator('question_text')
     @classmethod
@@ -142,26 +164,30 @@ class DailyQuestionResponse(BaseModel):
     id: int
     question_id: str
     question_text: str
-    option_a: Optional[str] = None
-    option_b: Optional[str] = None
     question_type: QuestionTypeEnum
+    options: list | None = None  # list of member names or duo labels (or null for free_text)
+    option_counts: dict | None = None  # vote counts per option
     question_date: datetime
     is_active: bool
-    vote_count_a: int = 0
-    vote_count_b: int = 0
     total_votes: int
-    user_vote: Optional[str] = None
+    allow_multiple: bool = False
+    user_vote: Optional[Union[str, List[str]]] = None
     user_text_answer: Optional[str] = None
     user_streak: int = 0
     longest_streak: int = 0
+    # Deprecated fields (kept for backward compatibility):
+    option_a: Optional[str] = None
+    option_b: Optional[str] = None
+    vote_count_a: int = 0
+    vote_count_b: int = 0
 
 # ============= Vote Schemas =============
 
 class VoteCreate(BaseModel):
-    answer: Optional[str] = Field(None, pattern=r"^[AB]$")
+    answer: Optional[str] = Field(None, max_length=255)
 
 class AnswerSubmissionCreate(BaseModel):
-    answer: Optional[str] = Field(None, pattern=r"^[AB]$")  # For binary and single choice
+    answer: Optional[Union[str, List[str]]] = Field(None, description="String or list of strings for choices")  # For member/duo/binary/single choice
     text_answer: Optional[str] = Field(None, max_length=1000)  # For free text
     
     @field_validator('text_answer')
@@ -182,6 +208,7 @@ class QuestionTemplateCreate(BaseModel):
     option_a_template: Optional[str] = Field(None, max_length=100)
     option_b_template: Optional[str] = Field(None, max_length=100)
     question_type: QuestionTypeEnum = QuestionTypeEnum.BINARY_VOTE
+    allow_multiple: bool = False
     
     @field_validator('category')
     @classmethod
@@ -206,6 +233,7 @@ class QuestionTemplateResponse(BaseModel):
     option_a_template: Optional[str] = None
     option_b_template: Optional[str] = None
     question_type: QuestionTypeEnum
+    allow_multiple: bool = False
     is_public: bool
     created_at: datetime
 
