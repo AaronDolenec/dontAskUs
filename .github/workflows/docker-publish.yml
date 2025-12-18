@@ -55,12 +55,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build admin UI
-        run: |
-          cd backend/admin-ui
-          npm ci
-          npm run build
-
       - name: Extract metadata for admin-ui
         id: meta-admin-ui
         uses: docker/metadata-action@v5
