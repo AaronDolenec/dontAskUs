@@ -1,12 +1,22 @@
 name: Build and Push Docker Images
 
-on: push: branches: [main] tags: ['v*'] workflow_dispatch:
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
 
-env: REGISTRY: ghcr.io BACKEND_IMAGE:
-ghcr.io/${{ github.repository_owner }}/dontaskus-backend
+env:
+  REGISTRY: ghcr.io
+  BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/dontaskus-backend
   ADMIN_UI_IMAGE: ghcr.io/${{ github.repository_owner }}/dontaskus-admin-ui
 
-jobs: build-and-push: runs-on: ubuntu-latest permissions: contents: read packages: write
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout repository
