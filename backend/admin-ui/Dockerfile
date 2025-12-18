@@ -6,14 +6,17 @@ WORKDIR /app
 # Copy package files
 COPY package.json package-lock.json* ./
 
-# Install dependencies (use install to handle potential lock file mismatch)
-RUN npm install
+# Install dependencies
+RUN npm install --legacy-peer-deps
 
 # Copy the entire source
 COPY . .
 
-# Build the application
-RUN npm run build
+# List files for debugging
+RUN ls -la && ls -la src/
+
+# Build the application with verbose output
+RUN npm run build || (cat /root/.npm/_logs/*.log 2>/dev/null; exit 1)
 
 # Production stage
 FROM nginx:alpine
