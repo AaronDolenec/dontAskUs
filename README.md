@@ -9,95 +9,48 @@ A self-hosted alternative to AskUs with real-time voting and group management.
 - Docker and Docker Compose installed
 - A server or local machine
 
-### 1. Create project directory
+### 1. Download the example compose file
 
 ```bash
 mkdir dontaskus && cd dontaskus
+curl -O https://raw.githubusercontent.com/AaronDolenec/dontAskUs/main/docker-compose.example.yml
+mv docker-compose.example.yml docker-compose.yml
 ```
 
-### 2. Create `docker-compose.yml`
+### 2. Configure your instance
 
-```yaml
-services:
-  db:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_USER: dontaskus
-      POSTGRES_PASSWORD: changeme_db_password
-      POSTGRES_DB: dontaskus
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dontaskus"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  backend:
-    image: ghcr.io/aarondolenec/dontaskus-backend:latest
-    environment:
-      DATABASE_URL: postgresql://dontaskus:changeme_db_password@db:5432/dontaskus
-      REDIS_URL: redis://redis:6379
-      SECRET_KEY: changeme_generate_a_secure_random_string
-      ADMIN_JWT_SECRET: changeme_another_secure_random_string
-      ALLOWED_ORIGINS: http://localhost:3000,http://localhost:5173
-    ports:
-      - "8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  admin-ui:
-    image: ghcr.io/aarondolenec/dontaskus-admin-ui:latest
-    ports:
-      - "5173:80"
-    depends_on:
-      - backend
-
-volumes:
-  postgres_data:
-  redis_data:
-```
-
-### 3. Create `.env` file (optional, for customization)
+Edit `docker-compose.yml` and update all `CHANGE_ME` values:
 
 ```bash
 # Generate secure secrets
-SECRET_KEY=$(openssl rand -base64 32)
-ADMIN_JWT_SECRET=$(openssl rand -base64 32)
-DB_PASSWORD=$(openssl rand -base64 16)
-
-cat > .env << EOF
-SECRET_KEY=${SECRET_KEY}
-ADMIN_JWT_SECRET=${ADMIN_JWT_SECRET}
-POSTGRES_PASSWORD=${DB_PASSWORD}
-DATABASE_URL=postgresql://dontaskus:${DB_PASSWORD}@db:5432/dontaskus
-EOF
+openssl rand -base64 32  # Use for SECRET_KEY
+openssl rand -base64 32  # Use for ADMIN_JWT_SECRET
+openssl rand -base64 16  # Use for database password
 ```
 
-### 4. Start the stack
+Key settings to change:
+
+- `POSTGRES_PASSWORD` and matching password in `DATABASE_URL`
+- `SECRET_KEY` - JWT secret for user sessions
+- `ADMIN_JWT_SECRET` - JWT secret for admin sessions
+- `ADMIN_INITIAL_USERNAME` - Initial admin username (default: admin)
+- `ADMIN_INITIAL_PASSWORD` - Initial admin password
+- `ALLOWED_ORIGINS` - Your domain(s) for CORS
+
+### 3. Start the stack
 
 ```bash
 docker compose up -d
 ```
 
-### 5. Create admin user
+### 4. Access your instance
 
-```bash
-docker compose exec backend python create_admin_user.py
-```
+- **Admin UI**: http://localhost:5173
+- **API Docs**: http://localhost:8000/docs
+
+Login with the `ADMIN_INITIAL_USERNAME` and `ADMIN_INITIAL_PASSWORD` you configured.
+
+> **Important**: Change your password and enable 2FA in Account Settings after first login!
 
 Follow the prompts to create your admin account.
 
@@ -143,6 +96,24 @@ services:
       - "traefik.http.routers.api.tls.certresolver=letsencrypt"
     # ... rest of config
 ```
+
+---
+
+---
+
+## Configuration Reference
+
+| Variable                    | Description                            | Required              |
+| --------------------------- | -------------------------------------- | --------------------- |
+| `DATABASE_URL`              | PostgreSQL connection string           | Yes                   |
+| `REDIS_URL`                 | Redis connection string                | Yes                   |
+| `SECRET_KEY`                | JWT signing secret for user sessions   | Yes                   |
+| `ADMIN_JWT_SECRET`          | JWT signing secret for admin sessions  | Yes                   |
+| `ADMIN_INITIAL_USERNAME`    | Initial admin username                 | No (default: `admin`) |
+| `ADMIN_INITIAL_PASSWORD`    | Initial admin password                 | Yes                   |
+| `ALLOWED_ORIGINS`           | CORS allowed origins (comma-separated) | Yes                   |
+| `LOG_LEVEL`                 | Logging level                          | No (default: `INFO`)  |
+| `SESSION_TOKEN_EXPIRY_DAYS` | User session token expiry              | No (default: `7`)     |
 
 ---
 

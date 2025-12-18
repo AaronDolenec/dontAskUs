@@ -1,8 +1,8 @@
 # dontAskUs - Complete API Documentation
 
 **Base URL:** `http://localhost:8000` (development)  
-**Version:** 1.0  
-**Last Updated:** December 17, 2025
+**Version:** 1.0.1  
+**Last Updated:** December 18, 2025
 
 ---
 
@@ -517,19 +517,22 @@ GET /api/groups/{group_id}/question-sets
 
 ## Admin Authentication
 
-Instance admins have full platform access with 2FA security.
+Instance admins have full platform access with optional 2FA security.
 
 ### Initial Setup
 
-Set environment variables:
+The admin user is **automatically created on first container startup** using environment variables:
 
 ```bash
-ADMIN_INITIAL_USERNAME=admin
-ADMIN_INITIAL_PASSWORD=changeme123
+ADMIN_INITIAL_USERNAME=admin           # Default: admin
+ADMIN_INITIAL_PASSWORD=your_password   # Required - change this!
 ```
 
-On first container start, the admin user is auto-created without TOTP. After first login, configure
-TOTP via the UI.
+**Important:**
+
+- Change your password immediately after first login
+- Enable 2FA (TOTP) in Account Settings for enhanced security
+- The admin user is only created if no admin exists yet
 
 ---
 
@@ -1176,26 +1179,52 @@ WS /ws/groups/{group_id}/questions/{question_id}
 ### Backend Configuration
 
 ```bash
-# Database
-DATABASE_URL=postgresql+psycopg2://user:pass@db:5432/qadb
+# ═══════════════════════════════════════════════════════════════════════
+# DATABASE
+# ═══════════════════════════════════════════════════════════════════════
+DATABASE_URL=postgresql://dontaskus:password@db:5432/dontaskus
+REDIS_URL=redis://redis:6379
 
-# Redis
-REDIS_URL=redis://redis:6379/0
-
-# Security
+# ═══════════════════════════════════════════════════════════════════════
+# SECURITY - Generate with: openssl rand -base64 32
+# ═══════════════════════════════════════════════════════════════════════
 SECRET_KEY=your-super-secret-key-change-in-production
-SESSION_TOKEN_EXPIRY_DAYS=7
+ADMIN_JWT_SECRET=another-secret-for-admin-jwt-tokens
 
-# CORS
-ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
-
-# Admin Setup
+# ═══════════════════════════════════════════════════════════════════════
+# INITIAL ADMIN USER (auto-created on first startup)
+# Change password after first login!
+# ═══════════════════════════════════════════════════════════════════════
 ADMIN_INITIAL_USERNAME=admin
 ADMIN_INITIAL_PASSWORD=changeme123
 
-# Scheduling
+# ═══════════════════════════════════════════════════════════════════════
+# CORS - Comma-separated list of allowed origins
+# ═══════════════════════════════════════════════════════════════════════
+ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
+
+# ═══════════════════════════════════════════════════════════════════════
+# OPTIONAL SETTINGS
+# ═══════════════════════════════════════════════════════════════════════
+SESSION_TOKEN_EXPIRY_DAYS=7
+LOG_LEVEL=INFO
 SCHEDULE_INTERVAL_SECONDS=86400
 ```
+
+### Environment Variable Reference
+
+| Variable                    | Description                   | Required | Default |
+| --------------------------- | ----------------------------- | -------- | ------- |
+| `DATABASE_URL`              | PostgreSQL connection string  | Yes      | -       |
+| `REDIS_URL`                 | Redis connection string       | Yes      | -       |
+| `SECRET_KEY`                | JWT secret for user sessions  | Yes      | -       |
+| `ADMIN_JWT_SECRET`          | JWT secret for admin sessions | Yes      | -       |
+| `ADMIN_INITIAL_USERNAME`    | Initial admin username        | No       | `admin` |
+| `ADMIN_INITIAL_PASSWORD`    | Initial admin password        | Yes      | -       |
+| `ALLOWED_ORIGINS`           | CORS allowed origins          | Yes      | -       |
+| `SESSION_TOKEN_EXPIRY_DAYS` | User session expiry           | No       | `7`     |
+| `LOG_LEVEL`                 | Logging level                 | No       | `INFO`  |
+| `SCHEDULE_INTERVAL_SECONDS` | Question scheduling interval  | No       | `86400` |
 
 ---
 
