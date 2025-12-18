@@ -2,10 +2,14 @@
 FROM node:20-alpine AS ui-builder
 
 WORKDIR /ui
-COPY admin-ui/package.json admin-ui/package-lock.json* admin-ui/yarn.lock* ./
-RUN npm install 2>/dev/null || yarn install
 
-COPY admin-ui .
+# Copy all admin-ui files first
+COPY admin-ui/ ./
+
+# Install dependencies
+RUN npm install --legacy-peer-deps
+
+# Build
 RUN npm run build
 
 # Stage 2: Python backend
