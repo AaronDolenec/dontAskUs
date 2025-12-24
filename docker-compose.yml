@@ -1,0 +1,90 @@
+# DontAskUs - Example Docker Compose for Production
+#
+# Usage:
+#   1. Copy this file to your server as docker-compose.yml
+#   2. Update ALL values marked with "CHANGE_ME" below
+#   3. Run: docker compose up -d
+#   4. Access Admin UI at http://localhost:5173
+#   5. Login with ADMIN_INITIAL_USERNAME / ADMIN_INITIAL_PASSWORD
+#
+# The admin user is created automatically on first startup.
+# After first login, you can change password and enable 2FA in Account Settings.
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dontaskus
+      POSTGRES_PASSWORD: CHANGE_ME_DB_PASSWORD  # Database password
+      POSTGRES_DB: dontaskus
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dontaskus"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    image: ghcr.io/aarondolenec/dontaskus-backend:latest
+    restart: unless-stopped
+    environment:
+      # ═══════════════════════════════════════════════════════════════════════
+      # DATABASE (must match db service above)
+      # ═══════════════════════════════════════════════════════════════════════
+      DATABASE_URL: postgresql://dontaskus:CHANGE_ME_DB_PASSWORD@db:5432/dontaskus
+      REDIS_URL: redis://redis:6379
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # SECURITY - Generate these with: openssl rand -base64 32
+      # ═══════════════════════════════════════════════════════════════════════
+      SECRET_KEY: CHANGE_ME_GENERATE_WITH_openssl_rand_base64_32
+      ADMIN_JWT_SECRET: CHANGE_ME_GENERATE_ANOTHER_SECRET
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # INITIAL ADMIN USER (created automatically on first startup)
+      # Change password immediately after first login!
+      # ═══════════════════════════════════════════════════════════════════════
+      ADMIN_INITIAL_USERNAME: admin
+      ADMIN_INITIAL_PASSWORD: changeme123
+
+      # ═══════════════════════════════════════════════════════════════════════
+      # CORS - Update with your domain(s), comma-separated
+      # ═══════════════════════════════════════════════════════════════════════
+      ALLOWED_ORIGINS: http://localhost:5173,http://localhost:8085
+
+      # Optional settings
+      LOG_LEVEL: INFO
+      SESSION_TOKEN_EXPIRY_DAYS: 7
+
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  admin-ui:
+    image: ghcr.io/aarondolenec/dontaskus-admin-ui:latest
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
