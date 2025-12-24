@@ -98,7 +98,7 @@ logging.basicConfig(
 )
 
 # Get configuration from environment
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000,http://localhost:8085,http://127.0.0.1:8085").split(",")
 SESSION_TOKEN_EXPIRY_DAYS = int(os.getenv("SESSION_TOKEN_EXPIRY_DAYS", "7"))
 
 # Create tables (guarded so app doesn't crash if DB is unavailable during dev)
