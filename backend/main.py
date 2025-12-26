@@ -1,38 +1,38 @@
-def verify_token(token: str, hashed_token: str) -> bool:
-    """Verify a plaintext token against its bcrypt hash."""
-    return bcrypt.checkpw(token.encode('utf-8'), hashed_token.encode('utf-8'))
-import bcrypt
-def hash_token(token: str) -> str:
-    """Hash a token using bcrypt for secure storage."""
-    return bcrypt.hashpw(token.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query, Path, Request, Header, Body
-from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from sqlalchemy.orm import Session
-from sqlalchemy import func, and_
-from datetime import datetime, date, timezone, timedelta
-from contextlib import asynccontextmanager
-import threading
-import time
-import random
-import os
-import json
-# pylint: disable=broad-except,logging-fstring-interpolation
-import secrets
-import string
-import qrcode
+# ============= Standard Library Imports =============
 import base64
 import io
-from typing import Optional, Tuple
+import json
 import logging
+import os
+import random
+import secrets
+import string
+import threading
+import time
+from contextlib import asynccontextmanager
+from datetime import datetime, date, timezone, timedelta
+from typing import Optional, Tuple
+
+# ============= Third-Party Imports =============
+import bcrypt
+import jwt
+import qrcode
+from dotenv import load_dotenv
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query, Path, Request, Header, Body, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse, FileResponse, Response
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy import func, and_
+from sqlalchemy.orm import Session
+from starlette.middleware.gzip import GZipMiddleware
 
+# ============= Local Imports =============
 from database import engine, get_db, Base, SessionLocal
-from seed_defaults import initialize_default_question_set, assign_default_set_to_unassigned_groups
 from models import (
     Group, User, DailyQuestion, Vote, QuestionTemplate, QuestionSet, QuestionSetTemplate, 
     GroupQuestionSet, UserGroupStreak, QuestionTypeEnum, AdminUser, AuditLog, GroupCustomSet,
@@ -45,21 +45,42 @@ from schemas import (
     GroupAssignSetsRequest,
     AdminLoginRequest, AdminLoginResponse, Admin2FARequest, Admin2FAResponse
 )
-import jwt
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi import status
-## duplicate import removed (see above)
+from seed_defaults import initialize_default_question_set, assign_default_set_to_unassigned_groups
+from ws_manager import manager
+
+# ============= Load Environment =============
+load_dotenv()
+
+# ============= Token Utility Functions =============
+def verify_token(token: str, hashed_token: str) -> bool:
+    """Verify a plaintext token against its bcrypt hash."""
+    return bcrypt.checkpw(token.encode('utf-8'), hashed_token.encode('utf-8'))
+
+def hash_token(token: str) -> str:
+    """Hash a token using bcrypt for secure storage."""
+    return bcrypt.hashpw(token.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 # ============= Admin Auth Config =============
 ADMIN_JWT_SECRET = os.getenv("ADMIN_JWT_SECRET", "supersecretkey")
 ADMIN_JWT_ALGO = "HS256"
 ADMIN_JWT_EXPIRE_MINUTES = 60 * 8  # 8 hours
 
+# ============= Logging Configuration =============
+# pylint: disable=broad-except,logging-fstring-interpolation
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+# ============= Application Configuration =============
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000,http://localhost:8085,http://127.0.0.1:8085").split(",")
+SESSION_TOKEN_EXPIRY_DAYS = int(os.getenv("SESSION_TOKEN_EXPIRY_DAYS", "7"))
+
 security = HTTPBearer()
 
-
-
+# ============= Admin Auth Helper Functions =============
 def create_admin_jwt(admin_id: int) -> str:
+    """Create a JWT token for admin authentication."""
     payload = {
         "sub": str(admin_id),
         "exp": datetime.utcnow() + timedelta(minutes=ADMIN_JWT_EXPIRE_MINUTES)
@@ -67,6 +88,7 @@ def create_admin_jwt(admin_id: int) -> str:
     return jwt.encode(payload, ADMIN_JWT_SECRET, algorithm=ADMIN_JWT_ALGO)
 
 def verify_admin_jwt(token: str) -> int:
+    """Verify a JWT token and return the admin ID."""
     try:
         payload = jwt.decode(token, ADMIN_JWT_SECRET, algorithms=[ADMIN_JWT_ALGO])
         return int(payload["sub"])
@@ -74,6 +96,7 @@ def verify_admin_jwt(token: str) -> int:
         raise HTTPException(status_code=401, detail="Invalid or expired admin token")
 
 def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)) -> AdminUser:
+    """Dependency to get the current authenticated admin."""
     token = credentials.credentials
     admin_id = verify_admin_jwt(token)
     admin = db.query(AdminUser).filter(AdminUser.id == admin_id, AdminUser.is_active == True).first()
@@ -81,75 +104,68 @@ def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(securi
         raise HTTPException(status_code=401, detail="Admin not found or inactive")
     return admin
 
+# ============= Background Scheduler =============
+_scheduler_thread = None
 
-
-# ============= Admin Auth Endpoints =============
-
-# (Moved below app = FastAPI(...))
-from ws_manager import manager
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# Central logging configuration
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
-
-# Get configuration from environment
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000,http://localhost:8085,http://127.0.0.1:8085").split(",")
-SESSION_TOKEN_EXPIRY_DAYS = int(os.getenv("SESSION_TOKEN_EXPIRY_DAYS", "7"))
-
-# Create tables (guarded so app doesn't crash if DB is unavailable during dev)
-try:
-    Base.metadata.create_all(bind=engine)
-except Exception:
-    logging.exception("Database unavailable at startup; continuing without creating tables")
-
-
-
-# Move lifespan definition above app initialization
 @asynccontextmanager
-async def lifespan(_app):
-    # Run startup tasks: seed default data and start the background scheduler
+async def lifespan(app: FastAPI):
+    """Manage application lifespan: startup and shutdown."""
+    global _scheduler_thread
+    
+    # ===== STARTUP =====
+    startup_tasks_failed = []
+    
     try:
-        # seed default templates and sets
-        try:
-            initialize_default_question_set()
-        except Exception:
-            logging.exception("initialize_default_question_set failed during lifespan startup")
-        # Ensure all groups have the Default set if none assigned
-        try:
-            assign_default_set_to_unassigned_groups()
-        except Exception:
-            logging.exception("assign_default_set_to_unassigned_groups failed during lifespan startup")
+        Base.metadata.create_all(bind=engine)
+        logging.info("Database tables created/verified")
+    except Exception as e:
+        startup_tasks_failed.append(f"Database table creation: {e}")
+        logging.exception("Database table creation failed")
 
-        # start scheduler thread
-        try:
-            interval = int(os.getenv("SCHEDULE_INTERVAL_SECONDS", "86400"))
-            t = threading.Thread(target=_background_scheduler, args=(interval,), daemon=True)
-            t.start()
-        except Exception:
-            logging.exception("background scheduler failed to start during lifespan startup")
+    try:
+        initialize_default_question_set()
+        logging.info("Default question set initialized")
+    except Exception as e:
+        startup_tasks_failed.append(f"Default question set initialization: {e}")
+        logging.exception("initialize_default_question_set failed during startup")
+    
+    try:
+        assign_default_set_to_unassigned_groups()
+        logging.info("Unassigned groups assigned default set")
+    except Exception as e:
+        startup_tasks_failed.append(f"Default set assignment: {e}")
+        logging.exception("assign_default_set_to_unassigned_groups failed during startup")
 
-        yield
-        
-        # Startup complete - log access information to console and logs
-        startup_msg = (
-            "\n" + "=" * 80 + "\n"
-            "🚀 DontAskUs Backend Started Successfully!\n"
-            "=" * 80 + "\n"
-            "📚 API Documentation: http://localhost:8000/docs\n"
-            "🔐 Admin UI: http://localhost:5173/admin\n"
-            "📊 API Base URL: http://localhost:8000/api\n"
-            "=" * 80 + "\n"
-        )
-        print(startup_msg)
-        logging.info(startup_msg)
-    finally:
-        # no-op shutdown
-        pass
+    try:
+        interval = int(os.getenv("SCHEDULE_INTERVAL_SECONDS", "86400"))
+        _scheduler_thread = threading.Thread(target=_background_scheduler, args=(interval,), daemon=True)
+        _scheduler_thread.start()
+        logging.info(f"Background scheduler started (interval: {interval}s)")
+    except Exception as e:
+        startup_tasks_failed.append(f"Background scheduler: {e}")
+        logging.exception("background scheduler failed to start")
+
+    # Log startup status
+    startup_msg = (
+        "\n" + "=" * 80 + "\n"
+        "🚀 DontAskUs Backend Started Successfully!\n"
+        "=" * 80 + "\n"
+        "📚 API Documentation: http://localhost:8000/docs\n"
+        "🔐 Admin UI: http://localhost:5173/admin\n"
+        "📊 API Base URL: http://localhost:8000/api\n"
+    )
+    if startup_tasks_failed:
+        startup_msg += f"⚠️  {len(startup_tasks_failed)} startup tasks failed - see logs\n"
+    startup_msg += "=" * 80 + "\n"
+    print(startup_msg)
+    logging.info(startup_msg)
+
+    yield
+    
+    # ===== SHUTDOWN =====
+    logging.info("DontAskUs Backend shutting down...")
+    # Scheduler thread is daemon, so it will be automatically terminated
+    logging.info("DontAskUs Backend shutdown complete")
 
 app = FastAPI(
     title="DontAskUs - Real-Time Q&A Platform",
@@ -160,11 +176,30 @@ app = FastAPI(
     redoc_url=None,
 )
 
-# Rate limiter
-limiter = Limiter(key_func=get_remote_address)
-app.state.limiter = limiter
+# ============= Middleware Stack =============
 
-# CORS - Whitelist specific origins instead of wildcard
+# 1. Security Headers Middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Add security headers to all responses."""
+    response = await call_next(request)
+    # Prevent MIME type sniffing
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    # Enable XSS protection in older browsers
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    # Prevent framing/clickjacking
+    response.headers["X-Frame-Options"] = "DENY"
+    # Control referrer information
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # HSTS - enforce HTTPS (set to 0 for dev/http-only environments)
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+# 2. GZIP Compression Middleware (must be before other middleware)
+app.add_middleware(GZipMiddleware, minimum_size=500)
+
+# 3. CORS Middleware
 allowed_origins_list = [origin.strip() for origin in ALLOWED_ORIGINS if origin.strip()]
 logging.info(f"CORS allowed origins: {allowed_origins_list}")
 
@@ -175,6 +210,24 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Content-Type", "Authorization", "X-Admin-Token"],
 )
+
+# ============= Rate Limiting =============
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+# Rate Limiting Strategy:
+# - Admin endpoints: 5/minute (login), 10/minute (2FA, password change)
+# - Write operations (POST/PUT/DELETE): 10-30/minute depending on endpoint
+# - Read operations (GET): 100-200/minute for public endpoints
+# - Validation/token endpoints: 200/minute
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(_request: Request, _exc: RateLimitExceeded):
+    """Handle rate limit exceeded errors."""
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Too many requests. Please try again later."}
+    )
 
 SWAGGER_DARK_CSS = """
 @import url('https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css');
@@ -245,12 +298,22 @@ async def custom_swagger_ui():
         },
     )
 
-# Rate limiting error handler
-@app.exception_handler(RateLimitExceeded)
-async def rate_limit_handler(_request, _exc):
-    return JSONResponse(status_code=429, content={"detail": "Too many requests. Please try again later."})
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui():
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title="DontAskUs API Docs",
+        swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js",
+        swagger_css_url="/swagger-ui-dark.css",
+        swagger_ui_parameters={
+            "defaultModelsExpandDepth": -1,
+            "displayRequestDuration": True,
+            "persistAuthorization": True,
+            "syntaxHighlight.theme": "monokai",
+        },
+    )
 
-# Mount admin UI static files
+# ============= Mount Admin UI Static Files =============
 ui_dist_path = os.path.join(os.path.dirname(__file__), "admin_ui_dist")
 if os.path.exists(ui_dist_path):
     app.mount("/admin", StaticFiles(directory=ui_dist_path, html=True), name="admin-ui")

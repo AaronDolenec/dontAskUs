@@ -19,7 +19,7 @@ services:
       POSTGRES_PASSWORD: CHANGE_ME_DB_PASSWORD  # Database password
       POSTGRES_DB: dontaskus
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - dontaskus_postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dontaskus"]
       interval: 5s
@@ -30,7 +30,7 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     volumes:
-      - redis_data:/data
+      - dontaskus_redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -43,6 +43,9 @@ services:
     environment:
       # ═══════════════════════════════════════════════════════════════════════
       # DATABASE (must match db service above)
+      # IMPORTANT: If your password contains special characters, URL-encode them:
+      # @ → %40, ! → %21, # → %23, : → %3A, / → %2F, ? → %3F, & → %26
+      # Example: password "test@pass!" becomes "test%40pass%21"
       # ═══════════════════════════════════════════════════════════════════════
       DATABASE_URL: postgresql://dontaskus:CHANGE_ME_DB_PASSWORD@db:5432/dontaskus
       REDIS_URL: redis://redis:6379
@@ -86,5 +89,5 @@ services:
       - backend
 
 volumes:
-  postgres_data:
-  redis_data:
+  dontaskus_postgres_data:
+  dontaskus_redis_data:

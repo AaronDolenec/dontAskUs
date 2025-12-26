@@ -67,7 +67,7 @@ services:
       context: ./admin-ui
       dockerfile: Dockerfile
     ports:
-      - "5173:5173"
+      - "5173:80"
     depends_on:
       backend:
         condition: service_healthy

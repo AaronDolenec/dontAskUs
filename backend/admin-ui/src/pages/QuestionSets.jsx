@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../lib/api'
+import '../styles/Management.css'
 
 export default function QuestionSets() {
   const [sets, setSets] = useState([])
@@ -158,13 +159,13 @@ export default function QuestionSets() {
       </div>
 
       {total === 0 && !showNewSetForm && (
-        <div style={{ padding: 20, backgroundColor: '#f0f0f0', borderRadius: 4, textAlign: 'center' }}>
+        <div style={{ padding: 20, backgroundColor: 'var(--bg-secondary)', borderRadius: 4, textAlign: 'center', color: 'var(--text-secondary)' }}>
           <p>No question sets found. Create one to get started!</p>
         </div>
       )}
 
       {showNewSetForm && (
-        <div style={{ marginBottom: 16, padding: 12, border: '1px solid #ccc', borderRadius: 4 }}>
+        <div style={{ marginBottom: 16, padding: 12, border: '1px solid var(--border-color)', borderRadius: 4, backgroundColor: 'var(--bg-primary)' }}>
           <input
             type="text"
             placeholder="Set name"
@@ -184,7 +185,7 @@ export default function QuestionSets() {
         </div>
       )}
 
-      <table border="1" cellPadding="6" style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <table className="management-table">
         <thead>
           <tr>
             <th>ID</th><th>Name</th><th>Questions</th><th>Public</th><th>Usage</th><th>Actions</th>
@@ -207,8 +208,8 @@ export default function QuestionSets() {
                 </td>
               </tr>
               {expandedId === s.id && (
-                <tr>
-                  <td colSpan="6" style={{ backgroundColor: '#f5f5f5', padding: 16 }}>
+                <tr className="expanded-row">
+                  <td colSpan="6" className="expanded-content">
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                         <h4 style={{ margin: 0 }}>Questions in "{s.name}"</h4>
@@ -233,31 +234,33 @@ export default function QuestionSets() {
                         </div>
                       </div>
                       {(questions[s.id] || []).length === 0 ? (
-                        <div style={{ padding: 12, backgroundColor: 'white', border: '1px solid #ddd', borderRadius: 4, textAlign: 'center', color: '#999' }}>
+                        <div style={{ padding: 12, backgroundColor: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: 4, textAlign: 'center', color: 'var(--text-secondary)' }}>
                           No questions in this set yet. Click "Add Question" to create one.
                         </div>
                       ) : (
                         <div>
                           {(questions[s.id] || []).map((q, idx) => (
-                            <div key={q.id} style={{ marginBottom: 8, padding: 12, backgroundColor: 'white', border: '1px solid #ddd', borderRadius: 4 }}>
+                            <div key={q.id} style={{ marginBottom: 8, padding: 12, backgroundColor: 'var(--bg-primary)', border: '1px solid var(--border-color)', borderRadius: 4 }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                                 <div style={{ flex: 1 }}>
                                   <div style={{ fontWeight: 'bold', marginBottom: 4 }}>
                                     #{idx + 1}: {q.text || q.question_text}
                                   </div>
-                                  <div style={{ fontSize: '12px', color: '#666' }}>
-                                    Type: <code style={{ backgroundColor: '#e0e0e0', padding: '2px 4px', borderRadius: 2 }}>{q.type}</code>
+                                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                    Type: <code style={{ backgroundColor: 'var(--bg-tertiary)', padding: '2px 4px', borderRadius: 2, color: 'var(--text-primary)' }}>{q.type}</code>
                                   </div>
                                   {q.options && q.options.length > 0 && (
                                     <div style={{ marginTop: 6, fontSize: '12px' }}>
                                       Options: {q.options.map((opt, i) => (
                                         <span key={i} style={{ 
                                           display: 'inline-block',
-                                          backgroundColor: '#e3f2fd', 
+                                          backgroundColor: 'var(--chip-bg)', 
                                           padding: '2px 6px', 
                                           borderRadius: 3,
                                           marginRight: 4,
-                                          marginTop: 2
+                                          marginTop: 2,
+                                          color: 'var(--text-primary)',
+                                          border: '1px solid var(--chip-border)'
                                         }}>
                                           {opt}
                                         </span>
