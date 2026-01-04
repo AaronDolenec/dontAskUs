@@ -9,8 +9,8 @@ import sqlalchemy as sa
 from sqlalchemy import inspect
 
 # revision identifiers, used by Alembic.
-revision = '006_add_last_answer_date_to_streaks'
-down_revision = '005_make_totp_optional'
+revision = '006_streak_last_answer'
+down_revision = '005_totp_optional'
 branch_labels = None
 depends_on = None
 

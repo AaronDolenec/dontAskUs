@@ -8,8 +8,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = '005_make_totp_optional'
-down_revision = '004_allow_multiple_member_choice'
+revision = '005_totp_optional'
+down_revision = '004_multi_choice'
 branch_labels = None
 depends_on = None
 

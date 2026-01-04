@@ -291,3 +291,30 @@ class GroupCustomSet(Base):
     question_set = relationship("QuestionSet", foreign_keys=[set_id])
     group = relationship("Group", foreign_keys=[group_id])
     creator_user = relationship("User", foreign_keys=[creator_user_id])
+
+
+class UserDeviceToken(Base):
+    """
+    Store FCM device tokens for push notifications.
+    
+    This table is only used when push notifications are enabled via FCM_SERVER_KEY.
+    Each user can have multiple device tokens (one per device).
+    """
+    __tablename__ = "user_device_tokens"
+    __table_args__ = (
+        UniqueConstraint('user_id', 'token', name='uq_user_device_token'),
+        Index('idx_device_tokens_user_id', 'user_id'),
+        Index('idx_device_tokens_active', 'is_active'),
+    )
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token = Column(String(255), nullable=False)  # FCM device token
+    platform = Column(String(20), nullable=False)  # 'ios', 'android', 'web'
+    device_name = Column(String(100), nullable=True)  # Optional device identifier
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_used_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    is_active = Column(Boolean, default=True)
+    
+    user = relationship("User", backref="device_tokens")
+

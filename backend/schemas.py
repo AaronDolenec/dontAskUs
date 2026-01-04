@@ -264,3 +264,40 @@ class GroupQuestionSetsResponse(BaseModel):
 class GroupAssignSetsRequest(BaseModel):
     question_set_ids: list[str]
     replace: Optional[bool] = False
+
+
+# ============= Push Notification Schemas =============
+
+class DeviceTokenRegister(BaseModel):
+    """Request to register a device token for push notifications"""
+    token: str = Field(..., min_length=10, max_length=255)
+    platform: str = Field(..., pattern=r'^(ios|android|web)$')
+    device_name: Optional[str] = Field(None, max_length=100)
+    
+    @field_validator('token')
+    @classmethod
+    def validate_token(cls, v):
+        return sanitize_string(v, 255)
+    
+    @field_validator('device_name')
+    @classmethod
+    def validate_device_name(cls, v):
+        if v:
+            return sanitize_string(v, 100)
+        return v
+
+
+class DeviceTokenResponse(BaseModel):
+    """Response after registering a device token"""
+    id: int
+    token: str
+    platform: str
+    device_name: Optional[str]
+    created_at: datetime
+    is_active: bool
+
+
+class PushNotificationStatus(BaseModel):
+    """Status of push notification feature"""
+    enabled: bool
+    message: str

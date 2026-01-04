@@ -17,12 +17,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --upgrade pip==25.3
+# Install system dependencies first
 RUN apt-get update && apt-get install -y netcat-traditional curl && rm -rf /var/lib/apt/lists/*
 
-# Copy backend code
+# Copy and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy backend code (excluding files in .dockerignore)
 COPY . .
 
 # Copy built UI from stage 1

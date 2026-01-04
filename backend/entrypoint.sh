@@ -18,20 +18,17 @@ sleep 5
 
 # Run migrations
 echo "Running database migrations..."
-if alembic upgrade head; then
-  echo "Migrations completed successfully!"
-else
-  echo "Migrations completed or already applied!"
-fi
+echo "Current directory: $(pwd)"
+echo "Checking alembic.ini..."
+ls -la alembic.ini || echo "alembic.ini not found!"
+echo "Running alembic upgrade head..."
+alembic upgrade head 2>&1
+echo "Migrations completed!"
 
 # Create initial admin user from env vars if none exists
 echo "Ensuring initial admin user exists (env-driven)..."
-if python create_admin_user.py; then
-  echo "Admin user creation completed successfully!"
-else
-  echo "WARNING: Failed to create admin user. Error details:"
-  python create_admin_user.py 2>&1 || echo "Admin user creation failed!"
-fi
+python create_admin_user.py
+echo "Admin user setup complete!"
 
 # Start the application
 echo ""

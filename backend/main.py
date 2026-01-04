@@ -36,14 +36,17 @@ from database import engine, get_db, Base, SessionLocal
 from models import (
     Group, User, DailyQuestion, Vote, QuestionTemplate, QuestionSet, QuestionSetTemplate, 
     GroupQuestionSet, UserGroupStreak, QuestionTypeEnum, AdminUser, AuditLog, GroupCustomSet,
+    UserDeviceToken,
     hash_password, verify_password, generate_totp_secret, verify_totp
 )
+from push_notifications import push_service
 from schemas import (
     GroupCreate, GroupResponse, GroupResponsePublic, UserCreate, UserResponse,
     DailyQuestionCreate, DailyQuestionResponse, VoteCreate, AnswerSubmissionCreate,
     QuestionTemplateResponse, QuestionSetCreate, QuestionSetResponse, GroupQuestionSetsResponse, 
     GroupAssignSetsRequest,
-    AdminLoginRequest, AdminLoginResponse, Admin2FARequest, Admin2FAResponse
+    AdminLoginRequest, AdminLoginResponse, Admin2FARequest, Admin2FAResponse,
+    DeviceTokenRegister, DeviceTokenResponse, PushNotificationStatus
 )
 from seed_defaults import initialize_default_question_set, assign_default_set_to_unassigned_groups
 from ws_manager import manager
@@ -740,6 +743,40 @@ def create_daily_questions_for_today():
                 logging.info(f"Question cycle reset for group {group.group_id} - all templates used")
         
         db.commit()
+        
+        # Send push notifications for new questions (if enabled)
+        if push_service.is_enabled():
+            for group in groups:
+                try:
+                    # Get the question we just created
+                    question = db.query(DailyQuestion).filter(
+                        and_(DailyQuestion.group_id == group.id, func.date(DailyQuestion.question_date) == today)
+                    ).first()
+                    if not question:
+                        continue
+                    
+                    # Get device tokens for all active group members (not suspended)
+                    group_user_ids = [m.id for m in db.query(User).filter(User.group_id == group.id, User.is_suspended == False).all()]
+                    device_tokens = db.query(UserDeviceToken).filter(
+                        UserDeviceToken.user_id.in_(group_user_ids),
+                        UserDeviceToken.is_active == True
+                    ).all()
+                    
+                    if device_tokens:
+                        tokens = [dt.token for dt in device_tokens]
+                        import asyncio
+                        # Run async notification in sync context
+                        asyncio.run(
+                            push_service.send_daily_question_notification(
+                                tokens=tokens,
+                                group_name=group.name,
+                                question_preview=question.question_text[:100]
+                            )
+                        )
+                        logging.info(f"Push notification sent to {len(tokens)} devices for group {group.group_id}")
+                except Exception as e:
+                    logging.error(f"Failed to send push notification for group {group.group_id}: {e}")
+                    
     except Exception:
         logging.exception("create_daily_questions_for_today failed, rolling back DB")
         db.rollback()
@@ -1120,6 +1157,30 @@ def create_daily_question(
     db.add(db_question)
     db.commit()
     db.refresh(db_question)
+    
+    # Send push notifications to group members (if enabled)
+    if push_service.is_enabled():
+        try:
+            # Get device tokens for all active group members (not suspended)
+            group_user_ids = [m.id for m in db.query(User).filter(User.group_id == group.id, User.is_suspended == False).all()]
+            device_tokens = db.query(UserDeviceToken).filter(
+                UserDeviceToken.user_id.in_(group_user_ids),
+                UserDeviceToken.is_active == True
+            ).all()
+            
+            if device_tokens:
+                tokens = [dt.token for dt in device_tokens]
+                import asyncio
+                asyncio.create_task(
+                    push_service.send_daily_question_notification(
+                        tokens=tokens,
+                        group_name=group.name,
+                        question_preview=db_question.question_text[:100]
+                    )
+                )
+                logging.info(f"Push notification sent to {len(tokens)} devices for group {group.group_id}")
+        except Exception as e:
+            logging.error(f"Failed to send push notifications: {e}")
     
     options_list_resp = json.loads(db_question.options) if db_question.options else []
     
@@ -1547,6 +1608,174 @@ def get_question_history(
         "limit": limit,
         "questions": result
     }
+
+
+# ============= Push Notification Endpoints =============
+
+@app.get("/api/push-notifications/status", tags=["Push Notifications"])
+async def get_push_notification_status() -> PushNotificationStatus:
+    """
+    Check if push notifications are enabled on this server.
+    
+    Push notifications are optional and require FCM_SERVER_KEY to be configured.
+    """
+    if push_service.is_enabled():
+        return PushNotificationStatus(
+            enabled=True,
+            message="Push notifications are enabled"
+        )
+    return PushNotificationStatus(
+        enabled=False,
+        message="Push notifications are not configured on this server"
+    )
+
+
+@app.post("/api/users/{user_id}/device-token", response_model=DeviceTokenResponse, tags=["Push Notifications"])
+@limiter.limit("10/minute")
+async def register_device_token(
+    request: Request,
+    user_id: str,
+    token_data: DeviceTokenRegister,
+    session_token: str = Header(..., alias="X-Session-Token"),
+    db: Session = Depends(get_db)
+):
+    """
+    Register a device token for push notifications.
+    
+    This allows the user's device to receive push notifications for:
+    - New daily questions
+    - Streak reminders
+    - Group activity
+    
+    Requires a valid session token for the user.
+    """
+    # Verify session token
+    user = verify_session_token(session_token, db)
+    if not user or user.user_id != user_id:
+        raise HTTPException(status_code=401, detail="Invalid session token")
+    
+    if not push_service.is_enabled():
+        raise HTTPException(
+            status_code=503, 
+            detail="Push notifications are not enabled on this server"
+        )
+    
+    # Check if token already exists for this user
+    existing = db.query(UserDeviceToken).filter(
+        UserDeviceToken.user_id == user.id,
+        UserDeviceToken.token == token_data.token
+    ).first()
+    
+    if existing:
+        # Update existing token
+        existing.platform = token_data.platform
+        existing.device_name = token_data.device_name
+        existing.last_used_at = datetime.now(timezone.utc)
+        existing.is_active = True
+        db.commit()
+        db.refresh(existing)
+        return DeviceTokenResponse(
+            id=existing.id,
+            token=existing.token,
+            platform=existing.platform,
+            device_name=existing.device_name,
+            created_at=existing.created_at,
+            is_active=existing.is_active
+        )
+    
+    # Create new device token
+    device_token = UserDeviceToken(
+        user_id=user.id,
+        token=token_data.token,
+        platform=token_data.platform,
+        device_name=token_data.device_name
+    )
+    db.add(device_token)
+    db.commit()
+    db.refresh(device_token)
+    
+    logging.info(f"Registered device token for user {user_id} on {token_data.platform}")
+    
+    return DeviceTokenResponse(
+        id=device_token.id,
+        token=device_token.token,
+        platform=device_token.platform,
+        device_name=device_token.device_name,
+        created_at=device_token.created_at,
+        is_active=device_token.is_active
+    )
+
+
+@app.delete("/api/users/{user_id}/device-token", tags=["Push Notifications"])
+@limiter.limit("10/minute")
+async def unregister_device_token(
+    request: Request,
+    user_id: str,
+    token: str = Query(..., description="The device token to remove"),
+    session_token: str = Header(..., alias="X-Session-Token"),
+    db: Session = Depends(get_db)
+):
+    """
+    Unregister a device token for push notifications.
+    
+    Use this when:
+    - User logs out
+    - User disables notifications
+    - Token becomes invalid
+    """
+    # Verify session token
+    user = verify_session_token(session_token, db)
+    if not user or user.user_id != user_id:
+        raise HTTPException(status_code=401, detail="Invalid session token")
+    
+    # Find and delete the token
+    device_token = db.query(UserDeviceToken).filter(
+        UserDeviceToken.user_id == user.id,
+        UserDeviceToken.token == token
+    ).first()
+    
+    if device_token:
+        db.delete(device_token)
+        db.commit()
+        logging.info(f"Unregistered device token for user {user_id}")
+        return {"message": "Device token removed successfully"}
+    
+    return {"message": "Device token not found"}
+
+
+@app.get("/api/users/{user_id}/device-tokens", response_model=list[DeviceTokenResponse], tags=["Push Notifications"])
+async def list_device_tokens(
+    user_id: str,
+    session_token: str = Header(..., alias="X-Session-Token"),
+    db: Session = Depends(get_db)
+):
+    """
+    List all registered device tokens for a user.
+    
+    Useful for showing the user their registered devices.
+    """
+    # Verify session token
+    user = verify_session_token(session_token, db)
+    if not user or user.user_id != user_id:
+        raise HTTPException(status_code=401, detail="Invalid session token")
+    
+    tokens = db.query(UserDeviceToken).filter(
+        UserDeviceToken.user_id == user.id,
+        UserDeviceToken.is_active == True
+    ).all()
+    
+    return [
+        DeviceTokenResponse(
+            id=t.id,
+            token=t.token,
+            platform=t.platform,
+            device_name=t.device_name,
+            created_at=t.created_at,
+            is_active=t.is_active
+        )
+        for t in tokens
+    ]
+
 
 # ============= WebSocket Real-Time Endpoints =============
 

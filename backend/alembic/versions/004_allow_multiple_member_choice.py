@@ -8,8 +8,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = '004_allow_multiple_member_choice'
-down_revision = '003_instance_admin_schema'
+revision = '004_multi_choice'
+down_revision = '003_admin_schema'
 branch_labels = None
 depends_on = None
 

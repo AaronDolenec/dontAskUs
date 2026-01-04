@@ -1,8 +1,8 @@
 # dontAskUs - Complete API Documentation
 
 **Base URL:** `http://localhost:8000` (development)  
-**Version:** 1.0.1  
-**Last Updated:** December 18, 2025
+**Version:** 1.1.0  
+**Last Updated:** January 4, 2026
 
 ---
 
@@ -22,9 +22,10 @@
 12. [Admin: Question Set Management](#admin-question-set-management)
 13. [Admin: Audit Logs](#admin-audit-logs)
 14. [Group Creator: Private Question Sets](#group-creator-private-question-sets)
-15. [WebSocket](#websocket)
-16. [Error Codes](#error-codes)
-17. [Rate Limiting](#rate-limiting)
+15. [Push Notifications](#push-notifications)
+16. [WebSocket](#websocket)
+17. [Error Codes](#error-codes)
+18. [Rate Limiting](#rate-limiting)
 
 ---
 
@@ -1103,6 +1104,122 @@ session_token: <token>
 
 ---
 
+## Push Notifications
+
+Push notifications are **optional** and use Firebase Cloud Messaging (FCM) HTTP v1 API.
+
+### Configuration
+
+To enable push notifications, set these environment variables:
+
+```bash
+FCM_PROJECT_ID=your-firebase-project-id
+FCM_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"...","private_key":"...","client_email":"..."}
+```
+
+Or use a file path:
+
+```bash
+FCM_PROJECT_ID=your-firebase-project-id
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+```
+
+### Check Push Notification Status
+
+```http
+GET /api/push-notifications/status
+```
+
+**Response (200):**
+
+```json
+{
+  "enabled": true,
+  "message": "Push notifications are enabled"
+}
+```
+
+Or if disabled:
+
+```json
+{
+  "enabled": false,
+  "message": "Push notifications are not configured on this server"
+}
+```
+
+### Register Device Token
+
+Register a device to receive push notifications.
+
+```http
+POST /api/users/{user_id}/device-token
+X-Session-Token: <session_token>
+Content-Type: application/json
+
+{
+  "token": "fcm-device-token-from-firebase-sdk",
+  "platform": "ios",  // "ios", "android", or "web"
+  "device_name": "iPhone 15 Pro"  // optional
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "id": 1,
+  "token": "fcm-device-token...",
+  "platform": "ios",
+  "device_name": "iPhone 15 Pro",
+  "created_at": "2026-01-04T10:00:00Z",
+  "is_active": true
+}
+```
+
+**Errors:**
+
+- `401`: Invalid session token
+- `503`: Push notifications not enabled on server
+
+### Unregister Device Token
+
+Remove a device token (e.g., on logout or when disabling notifications).
+
+```http
+DELETE /api/users/{user_id}/device-token?token=<device_token>
+X-Session-Token: <session_token>
+```
+
+**Response (200):**
+
+```json
+{
+  "message": "Device token removed successfully"
+}
+```
+
+### Notification Types
+
+The server sends these notification types automatically:
+
+| Type                | Trigger                    | Title Example                       |
+| ------------------- | -------------------------- | ----------------------------------- |
+| `new_question`      | New daily question created | "New Question in MyGroup! 🎯"       |
+| `daily_reminder`    | User hasn't answered today | "Don't break your 5-day streak! 🔥" |
+| `results_available` | Voting results ready       | "Results are in! 📊"                |
+
+### Mobile App Integration
+
+To receive notifications in your app:
+
+1. **Add Firebase SDK** to your iOS/Android/Web app
+2. **Get device token** from Firebase SDK on app startup
+3. **Register token** with this API when user logs in
+4. **Unregister token** when user logs out
+
+---
+
 ## WebSocket
 
 ### Live Vote Updates
@@ -1225,6 +1342,10 @@ SCHEDULE_INTERVAL_SECONDS=86400
 | `SESSION_TOKEN_EXPIRY_DAYS` | User session expiry           | No       | `7`     |
 | `LOG_LEVEL`                 | Logging level                 | No       | `INFO`  |
 | `SCHEDULE_INTERVAL_SECONDS` | Question scheduling interval  | No       | `86400` |
+| `FCM_PROJECT_ID`            | Firebase project ID           | No\*     | -       |
+| `FCM_SERVICE_ACCOUNT_JSON`  | Firebase service account JSON | No\*     | -       |
+
+\*Required only if push notifications are enabled
 
 ---
 

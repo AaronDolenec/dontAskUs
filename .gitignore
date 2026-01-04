@@ -137,12 +137,19 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
 .envrc
 .venv
 env/
 venv/
 ENV/
 env.bak/
+
+# Firebase Service Account (NEVER commit these!)
+firebase-*.json
+*-service-account.json
+*-firebase-adminsdk-*.json
 venv.bak/
 
 # Spyder project settings
