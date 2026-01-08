@@ -1,7 +1,7 @@
 # dontAskUs - Complete API Documentation
 
 **Base URL:** `http://localhost:8000` (development)  
-**Version:** 1.1.0  
+**Version:** 1.2.0  
 **Last Updated:** January 4, 2026
 
 ---
@@ -14,18 +14,20 @@
 4. [Group Endpoints](#group-endpoints)
 5. [Daily Questions & Voting](#daily-questions--voting)
 6. [Question Sets](#question-sets)
-7. [Admin Authentication](#admin-authentication)
-8. [Admin: Account Management](#admin-account-management)
-9. [Admin: Dashboard](#admin-dashboard)
-10. [Admin: User Management](#admin-user-management)
-11. [Admin: Group Management](#admin-group-management)
-12. [Admin: Question Set Management](#admin-question-set-management)
-13. [Admin: Audit Logs](#admin-audit-logs)
-14. [Group Creator: Private Question Sets](#group-creator-private-question-sets)
-15. [Push Notifications](#push-notifications)
-16. [WebSocket](#websocket)
-17. [Error Codes](#error-codes)
-18. [Rate Limiting](#rate-limiting)
+7. [Leaderboard](#leaderboard)
+8. [Admin Authentication](#admin-authentication)
+9. [Admin: Account Management](#admin-account-management)
+10. [Admin: Dashboard](#admin-dashboard)
+11. [Admin: User Management](#admin-user-management)
+12. [Admin: Group Management](#admin-group-management)
+13. [Admin: Question Set Management](#admin-question-set-management)
+14. [Admin: Audit Logs](#admin-audit-logs)
+15. [Group Creator: Private Question Sets](#group-creator-private-question-sets)
+16. [Push Notifications](#push-notifications)
+17. [WebSocket](#websocket)
+18. [Error Codes](#error-codes)
+19. [Rate Limiting](#rate-limiting)
+20. [Health Check](#health-check)
 
 ---
 
@@ -238,6 +240,48 @@ GET /api/groups/{group_id}/members
 
 ---
 
+## Leaderboard
+
+### Get Group Leaderboard
+
+Get leaderboard sorted by answer streak (requires session token).
+
+```http
+GET /api/groups/{group_id}/leaderboard?session_token=<token>
+```
+
+**Response (200):**
+
+```json
+[
+  {
+    "display_name": "Alice",
+    "color_avatar": "#3B82F6",
+    "answer_streak": 15,
+    "longest_answer_streak": 20
+  },
+  {
+    "display_name": "Bob",
+    "color_avatar": "#EF4444",
+    "answer_streak": 10,
+    "longest_answer_streak": 12
+  }
+]
+```
+
+**Notes:**
+
+- Results sorted by `answer_streak` descending, then by `longest_answer_streak`
+- User must be a member of the group
+
+**Errors:**
+
+- `401` Invalid or missing session token
+- `403` User not in this group
+- `404` Group not found
+
+---
+
 ## Daily Questions & Voting
 
 ### Question Types
@@ -378,6 +422,85 @@ Content-Type: application/json
 - `400` Invalid answer or already voted
 - `401` Invalid session token
 - `404` Question not found
+
+---
+
+### Get Question History
+
+Retrieve paginated history of all questions in a group (most recent first).
+
+```http
+GET /api/groups/{group_id}/questions/history?skip=0&limit=20
+```
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description                     |
+| --------- | ---- | ------- | ------------------------------- |
+| `skip`    | int  | 0       | Number of questions to skip     |
+| `limit`   | int  | 20      | Max questions to return (1-100) |
+
+**Response (200):**
+
+```json
+{
+  "group_id": "group-uuid",
+  "total_count": 45,
+  "skip": 0,
+  "limit": 20,
+  "questions": [
+    {
+      "question_id": "uuid-1",
+      "question_text": "Who is the funniest?",
+      "question_type": "member_choice",
+      "option_a": null,
+      "option_b": null,
+      "options": ["Alice", "Bob", "Charlie"],
+      "option_counts": {
+        "Alice": 4,
+        "Bob": 2,
+        "Charlie": 1
+      },
+      "question_date": "2025-12-17T00:00:00Z",
+      "is_active": false,
+      "vote_count_a": 0,
+      "vote_count_b": 0,
+      "total_votes": 7,
+      "allow_multiple": false
+    },
+    {
+      "question_id": "uuid-2",
+      "question_text": "Best movie of 2025?",
+      "question_type": "single_choice",
+      "option_a": "Movie A",
+      "option_b": "Movie B",
+      "options": ["Movie A", "Movie B", "Movie C"],
+      "option_counts": {
+        "Movie A": 3,
+        "Movie B": 2,
+        "Movie C": 4
+      },
+      "question_date": "2025-12-16T00:00:00Z",
+      "is_active": false,
+      "vote_count_a": 3,
+      "vote_count_b": 2,
+      "total_votes": 9,
+      "allow_multiple": false
+    }
+  ]
+}
+```
+
+**Notes:**
+
+- Results are ordered by `question_date` descending (most recent first)
+- Includes both active and inactive questions
+- No authentication required (public endpoint)
+- Use `skip` and `limit` for pagination
+
+**Errors:**
+
+- `404` Group not found
 
 ---
 
@@ -747,6 +870,106 @@ Content-Type: application/json
 
 ---
 
+### Generate TOTP Secret
+
+Generate a new TOTP secret and provisioning URI for setup.
+
+```http
+POST /api/admin/totp/setup
+Authorization: Bearer <access_token>
+```
+
+**Response (200):**
+
+```json
+{
+  "totp_secret": "JBSWY3DPEHPK3PXP",
+  "provisioning_uri": "otpauth://totp/dontAskUs:admin?secret=JBSWY3DPEHPK3PXP&issuer=dontAskUs",
+  "message": "Scan the QR code with your authenticator app or enter the secret manually"
+}
+```
+
+---
+
+### Enable TOTP (Alternative Method)
+
+Enable TOTP by providing both the secret and a verification code.
+
+```http
+POST /api/admin/totp/enable
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "totp_secret": "JBSWY3DPEHPK3PXP",
+  "verification_code": "123456"
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "message": "TOTP enabled successfully"
+}
+```
+
+**Errors:**
+
+- `400`: Missing totp_secret or verification_code
+- `400`: Invalid verification code
+
+---
+
+### Disable TOTP
+
+Disable TOTP (requires password verification for security).
+
+```http
+POST /api/admin/totp/disable
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "password": "currentPassword123"
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "message": "TOTP disabled successfully"
+}
+```
+
+**Errors:**
+
+- `400`: Password required to disable TOTP
+- `401`: Invalid password
+
+---
+
+### Get TOTP Status
+
+Get current TOTP configuration status.
+
+```http
+GET /api/admin/totp/status
+Authorization: Bearer <access_token>
+```
+
+**Response (200):**
+
+```json
+{
+  "totp_enabled": true,
+  "totp_configured": true
+}
+```
+
+---
+
 ## Admin: Dashboard
 
 ### Get Dashboard Stats
@@ -870,6 +1093,66 @@ Content-Type: application/json
 
 ---
 
+### Create User (Admin)
+
+Create a new user in a specific group.
+
+```http
+POST /api/admin/users
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "display_name": "NewUser",
+  "group_id": 1,
+  "color_avatar": "#FF5733"
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "id": 42,
+  "display_name": "NewUser",
+  "group_id": 1,
+  "session_token": "plaintext-session-token",
+  "color_avatar": "#FF5733"
+}
+```
+
+**Errors:**
+
+- `400`: Display name must be at least 2 characters
+- `400`: Group ID is required
+- `400`: Group not found
+- `400`: Display name already taken in this group
+
+---
+
+### Delete User (Admin)
+
+Delete a user and all their answers.
+
+```http
+DELETE /api/admin/users/{user_id}
+Authorization: Bearer <access_token>
+```
+
+**Response (200):**
+
+```json
+{
+  "status": "deleted"
+}
+```
+
+**Errors:**
+
+- `404`: User not found
+
+---
+
 ## Admin: Group Management
 
 ### List All Groups
@@ -924,6 +1207,179 @@ Content-Type: application/json
 
 ---
 
+### Create Group (Admin)
+
+Create a new group. Generates invite code and admin token automatically.
+
+```http
+POST /api/admin/groups
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "name": "New Discussion Group"
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "id": 42,
+  "name": "New Discussion Group"
+}
+```
+
+**Errors:**
+
+- `400`: Group name must be at least 2 characters
+- `400`: Group name must be at most 255 characters
+- `400`: Group name already exists
+
+---
+
+### Delete Group (Admin)
+
+Delete a group and all related data (users, questions, associations).
+
+```http
+DELETE /api/admin/groups/{group_id}
+Authorization: Bearer <access_token>
+```
+
+**Response (200):**
+
+```json
+{
+  "status": "deleted"
+}
+```
+
+**Errors:**
+
+- `404`: Group not found
+
+---
+
+### Get Admin Leaderboard
+
+Get group leaderboard (admin access via X-Admin-Token).
+
+```http
+GET /api/admin/groups/{group_id}/leaderboard
+X-Admin-Token: <admin_token>
+```
+
+**Response (200):**
+
+```json
+[
+  {
+    "display_name": "Alice",
+    "color_avatar": "#FF5733",
+    "answer_streak": 15,
+    "longest_answer_streak": 30
+  },
+  {
+    "display_name": "Bob",
+    "color_avatar": "#33FF57",
+    "answer_streak": 12,
+    "longest_answer_streak": 20
+  }
+]
+```
+
+---
+
+### Get Question Status
+
+Get question exhaustion status for a group.
+
+```http
+GET /api/admin/groups/{group_id}/question-status
+X-Admin-Token: <admin_token>
+```
+
+**Response (200):**
+
+```json
+{
+  "group_id": "abc123",
+  "total_available_templates": 100,
+  "used_templates_count": 45,
+  "exhausted": false,
+  "total_questions_created": 45,
+  "message": "Questions available"
+}
+```
+
+When exhausted:
+
+```json
+{
+  "group_id": "abc123",
+  "total_available_templates": 50,
+  "used_templates_count": 50,
+  "exhausted": true,
+  "total_questions_created": 50,
+  "message": "All questions have been used. Cycle will reset on next question."
+}
+```
+
+---
+
+### Reset Question Cycle
+
+Reset question cycle by clearing all used questions for a group.
+
+```http
+POST /api/admin/groups/{group_id}/reset-question-cycle
+X-Admin-Token: <admin_token>
+```
+
+**Response (200):**
+
+```json
+{
+  "group_id": "abc123",
+  "message": "Question cycle reset. 45 questions deleted.",
+  "deleted_count": 45
+}
+```
+
+---
+
+### Regenerate Today's Question
+
+Delete today's question (if any) and create a new one from current question sets.
+
+```http
+POST /api/admin/groups/{group_id}/regenerate-today
+X-Admin-Token: <admin_token>
+```
+
+**Response (200):**
+
+```json
+{
+  "id": 123,
+  "question_id": 456,
+  "question_text": "What's your favorite...",
+  "question_type": "single_choice",
+  "options": ["Option A", "Option B", "Option C"],
+  "option_counts": {},
+  "question_date": "2025-12-17",
+  "is_active": true,
+  "total_votes": 0
+}
+```
+
+**Errors:**
+
+- `400`: Unable to generate today's question (insufficient members or no templates)
+
+---
+
 ## Admin: Question Set Management
 
 ### List All Question Sets
@@ -960,6 +1416,170 @@ Authorization: Bearer <access_token>
   "offset": 0
 }
 ```
+
+---
+
+### Get Questions in Set (Admin)
+
+Get all questions in a specific question set.
+
+```http
+GET /api/admin/question-sets/{set_id}/questions
+Authorization: Bearer <access_token>
+```
+
+**Response (200):**
+
+```json
+{
+  "set_id": 1,
+  "questions": [
+    {
+      "id": 101,
+      "template_id": 1,
+      "question_text": "What's your favorite color?",
+      "type": "single_choice",
+      "options": ["Red", "Blue", "Green"],
+      "allow_multiple": false
+    },
+    {
+      "id": 102,
+      "template_id": 2,
+      "question_text": "Do you like coffee?",
+      "type": "binary_vote",
+      "options": ["Yes", "No"],
+      "allow_multiple": false
+    }
+  ]
+}
+```
+
+**Errors:**
+
+- `404`: Question set not found
+
+---
+
+### Create Question Set (Admin)
+
+Create a new question set.
+
+```http
+POST /api/admin/question-sets
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "name": "New Question Set",
+  "is_public": true
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "id": 42,
+  "name": "New Question Set",
+  "is_public": true
+}
+```
+
+**Errors:**
+
+- `400`: Question set name must be at least 2 characters
+- `400`: Question set name must be at most 255 characters
+- `400`: Question set name already exists
+
+---
+
+### Add Question to Set (Admin)
+
+Add a question to an existing question set.
+
+```http
+POST /api/admin/question-sets/{set_id}/questions
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "question_text": "What's your favorite color?",
+  "question_type": "choice",
+  "options": ["Red", "Blue", "Green", "Yellow"]
+}
+```
+
+**Question Types:**
+
+- `yesno`: Binary yes/no question (maps to `binary_vote`)
+- `choice`: Multiple choice with custom options (maps to `single_choice`)
+- `text` / `free_text`: Free text response
+- `member_choice`: Choose a group member
+- `duo_choice`: Choose two group members
+
+**Response (200):**
+
+```json
+{
+  "id": 101,
+  "question_text": "What's your favorite color?",
+  "type": "single_choice",
+  "options": ["Red", "Blue", "Green", "Yellow"]
+}
+```
+
+**Errors:**
+
+- `400`: Question text must be at least 3 characters
+- `400`: Invalid question type
+- `400`: Choice questions need at least 2 options
+- `404`: Question set not found
+
+---
+
+### Delete Question Set (Admin)
+
+Delete a question set and all related data.
+
+```http
+DELETE /api/admin/question-sets/{set_id}
+Authorization: Bearer <access_token>
+```
+
+**Response (200):**
+
+```json
+{
+  "status": "deleted"
+}
+```
+
+**Errors:**
+
+- `404`: Question set not found
+
+---
+
+### Delete Question from Set (Admin)
+
+Delete a specific question from a question set.
+
+```http
+DELETE /api/admin/question-sets/{set_id}/questions/{question_id}
+Authorization: Bearer <access_token>
+```
+
+**Response (200):**
+
+```json
+{
+  "status": "deleted"
+}
+```
+
+**Errors:**
+
+- `404`: Question not found
 
 ---
 
@@ -1104,6 +1724,113 @@ session_token: <token>
 
 ---
 
+### Update Private Set
+
+Update a private question set name and/or questions. Only the group creator can update sets.
+
+```http
+PUT /api/groups/{group_id}/question-sets/{set_id}
+session_token: <token>
+Content-Type: application/json
+
+{
+  "name": "Updated Set Name",
+  "questions": [
+    {
+      "text": "Updated question?",
+      "question_type": "binary_vote",
+      "options": ["Yes", "No"]
+    }
+  ]
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "message": "Question set updated successfully",
+  "set_id": 42,
+  "name": "Updated Set Name"
+}
+```
+
+**Errors:**
+
+- `401`: Invalid session token
+- `403`: Only group creator can update private sets
+- `404`: Question set not found
+
+---
+
+### Delete Private Set
+
+Delete a private question set. Cannot delete sets currently assigned to the group.
+
+```http
+DELETE /api/groups/{group_id}/question-sets/{set_id}
+session_token: <token>
+```
+
+**Response (200):**
+
+```json
+{
+  "message": "Question set deleted successfully",
+  "set_id": 42
+}
+```
+
+**Errors:**
+
+- `401`: Invalid session token
+- `403`: Only group creator can delete private sets
+- `400`: Cannot delete a set that is currently assigned to the group
+
+---
+
+### Get Question Set Usage
+
+Get usage statistics for a private question set (how many times each question has been asked).
+
+```http
+GET /api/groups/{group_id}/question-sets/{set_id}/usage
+session_token: <token>
+```
+
+**Response (200):**
+
+```json
+{
+  "set_id": 42,
+  "set_name": "My Custom Questions",
+  "total_times_used": 15,
+  "total_questions_asked": 45,
+  "questions": [
+    {
+      "template_id": 101,
+      "text": "What's your favorite color?",
+      "question_type": "single_choice",
+      "times_asked": 5
+    },
+    {
+      "template_id": 102,
+      "text": "Do you prefer morning or evening?",
+      "question_type": "binary_vote",
+      "times_asked": 3
+    }
+  ]
+}
+```
+
+**Errors:**
+
+- `401`: Invalid session token
+- `403`: Only group creator can view usage stats
+- `404`: Question set not found
+
+---
+
 ## Push Notifications
 
 Push notifications are **optional** and use Firebase Cloud Messaging (FCM) HTTP v1 API.
@@ -1199,6 +1926,42 @@ X-Session-Token: <session_token>
 }
 ```
 
+### List Device Tokens
+
+List all registered device tokens for a user.
+
+```http
+GET /api/users/{user_id}/device-tokens
+X-Session-Token: <session_token>
+```
+
+**Response (200):**
+
+```json
+[
+  {
+    "id": 1,
+    "token": "fcm-device-token...",
+    "platform": "ios",
+    "device_name": "iPhone 15 Pro",
+    "created_at": "2026-01-04T10:00:00Z",
+    "is_active": true
+  },
+  {
+    "id": 2,
+    "token": "fcm-device-token-2...",
+    "platform": "android",
+    "device_name": "Pixel 8",
+    "created_at": "2026-01-03T10:00:00Z",
+    "is_active": true
+  }
+]
+```
+
+**Errors:**
+
+- `401`: Invalid session token
+
 ### Notification Types
 
 The server sends these notification types automatically:
@@ -1224,7 +1987,7 @@ To receive notifications in your app:
 
 ### Live Vote Updates
 
-```
+```text
 WS /ws/groups/{group_id}/questions/{question_id}
 ```
 
@@ -1398,4 +2161,23 @@ curl -H "Authorization: Bearer TOKEN" \
 
 ---
 
-**End of Documentation**
+## Health Check
+
+Simple health check endpoint to verify the API is running.
+
+```http
+GET /health
+```
+
+**Response (200):**
+
+```json
+{
+  "status": "healthy",
+  "timestamp": "2025-12-17T10:00:00Z"
+}
+```
+
+---
+
+<!-- End of Documentation -->
