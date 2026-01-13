@@ -790,8 +790,8 @@ def create_daily_questions_for_today():
                     continue
                 options_list = member_names
             elif tmpl.question_type == QuestionTypeEnum.DUO_CHOICE:
-                if len(member_names) < 2:
-                    logging.warning("Skipping daily question for group %s - duo_choice requires at least two members", group.group_id)
+                if len(member_names) < 4:
+                    logging.warning("Skipping daily question for group %s - duo_choice requires at least four members", group.group_id)
                     continue
                 options_list = _generate_duos(member_names)
             elif tmpl.question_type == QuestionTypeEnum.BINARY_VOTE:
