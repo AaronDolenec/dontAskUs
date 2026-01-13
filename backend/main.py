@@ -674,7 +674,7 @@ def _update_user_group_streak(user_id: int, group_id: int, db: Session):
     db.commit()
 
 
-def require_group_admin(group_id: str = Path(...), x_admin_token: Optional[str] = Header(None), db: Session = Depends(get_db)):
+def require_group_admin(group_id: str = PathParam(...), x_admin_token: Optional[str] = Header(None), db: Session = Depends(get_db)):
     """Dependency to ensure the caller is group admin via `X-Admin-Token` header."""
     if not x_admin_token:
         raise HTTPException(status_code=401, detail="Admin token required in 'X-Admin-Token' header")
@@ -1048,7 +1048,7 @@ def get_group_by_code(request: Request, invite_code: str, db: Session = Depends(
 
 @app.get("/api/groups/{group_id}/info", response_model=dict)
 def get_group_full_info(
-    group_id: str = Path(...),
+    group_id: str = PathParam(...),
     db: Session = Depends(get_db)
 ):
     """Get complete group information"""
@@ -1536,7 +1536,7 @@ def get_group_question_sets(group_id: str, db: Session = Depends(get_db)):
 @limiter.limit("200/minute")
 def get_todays_question(
     request: Request,
-    group_id: str = Path(...),
+    group_id: str = PathParam(...),
     session_token: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
@@ -1593,8 +1593,8 @@ def get_todays_question(
 @limiter.limit("100/minute")
 def submit_answer(
     request: Request,
-    group_id: str = Path(...),
-    question_id: str = Path(...),
+    group_id: str = PathParam(...),
+    question_id: str = PathParam(...),
     answer: AnswerSubmissionCreate = None,
     session_token: Optional[str] = Query(None),
     db: Session = Depends(get_db)
@@ -1700,7 +1700,7 @@ def submit_answer(
 @limiter.limit("200/minute")
 def get_question_history(
     request: Request,
-    group_id: str = Path(...),
+    group_id: str = PathParam(...),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db)
@@ -2193,7 +2193,7 @@ def get_leaderboard(
 @limiter.limit("200/minute")
 def get_leaderboard_member(
     request: Request,
-    group_id: str = Path(...),
+    group_id: str = PathParam(...),
     session_token: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
