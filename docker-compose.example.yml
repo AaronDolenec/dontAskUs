@@ -82,6 +82,8 @@ services:
 
     ports:
       - "8000:8000"
+    volumes:
+      - dontaskus_avatar_uploads:/app/uploads/avatars
     depends_on:
       db:
         condition: service_healthy
@@ -98,4 +100,5 @@ services:
 
 volumes:
   dontaskus_postgres_data:
+  dontaskus_avatar_uploads:
   dontaskus_redis_data:

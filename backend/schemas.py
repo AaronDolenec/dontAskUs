@@ -115,8 +115,10 @@ class UserCreate(BaseModel):
 class UserResponse(BaseModel):
     id: int
     user_id: str
+    group_id: str
     display_name: str
     color_avatar: str
+    avatar_url: Optional[str] = None
     session_token: str
     created_at: datetime
     answer_streak: int = 0

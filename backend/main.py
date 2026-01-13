@@ -9,8 +9,10 @@ import secrets
 import string
 import threading
 import time
+import uuid as uuid_module
 from contextlib import asynccontextmanager
 from datetime import datetime, date, timezone, timedelta
+from pathlib import Path
 from typing import Optional, Tuple
 
 # ============= Third-Party Imports =============
@@ -18,12 +20,13 @@ import bcrypt
 import jwt
 import qrcode
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query, Path, Request, Header, Body, status
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query, Path as PathParam, Request, Header, Body, status, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
+from PIL import Image
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -78,6 +81,70 @@ logging.basicConfig(
 # ============= Application Configuration =============
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000,http://localhost:8085,http://127.0.0.1:8085").split(",")
 SESSION_TOKEN_EXPIRY_DAYS = int(os.getenv("SESSION_TOKEN_EXPIRY_DAYS", "7"))
+
+# ============= Avatar Upload Configuration =============
+AVATAR_UPLOAD_DIR = Path(__file__).parent / "uploads" / "avatars"
+AVATAR_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+AVATAR_MAX_SIZE_MB = 2  # Maximum file size in MB
+AVATAR_MAX_SIZE_BYTES = AVATAR_MAX_SIZE_MB * 1024 * 1024
+AVATAR_MAX_DIMENSION = 256  # Max width/height after resize
+AVATAR_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+AVATAR_MAGIC_BYTES = {
+    b'\xff\xd8\xff': 'image/jpeg',
+    b'\x89PNG\r\n\x1a\n': 'image/png',
+    b'GIF87a': 'image/gif',
+    b'GIF89a': 'image/gif',
+    b'RIFF': 'image/webp',  # WebP starts with RIFF
+}
+
+def validate_image_magic_bytes(file_bytes: bytes) -> Optional[str]:
+    """Validate file by checking magic bytes. Returns detected MIME type or None."""
+    for magic, mime_type in AVATAR_MAGIC_BYTES.items():
+        if file_bytes.startswith(magic):
+            return mime_type
+    # Special check for WebP (RIFF....WEBP)
+    if file_bytes[:4] == b'RIFF' and file_bytes[8:12] == b'WEBP':
+        return 'image/webp'
+    return None
+
+def process_avatar_image(file_bytes: bytes) -> bytes:
+    """
+    Process uploaded avatar image:
+    - Validate it's a real image
+    - Resize to max 256x256 (maintaining aspect ratio)
+    - Convert to WebP format for efficiency
+    - Returns processed image bytes
+    """
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+        
+        # Convert to RGB if necessary (handles RGBA, P mode, etc.)
+        if img.mode in ('RGBA', 'LA', 'P'):
+            # Create white background for transparency
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            if img.mode == 'P':
+                img = img.convert('RGBA')
+            background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+            img = background
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        # Resize maintaining aspect ratio
+        img.thumbnail((AVATAR_MAX_DIMENSION, AVATAR_MAX_DIMENSION), Image.Resampling.LANCZOS)
+        
+        # Save as WebP
+        output = io.BytesIO()
+        img.save(output, format='WEBP', quality=85, method=6)
+        return output.getvalue()
+    except Exception as e:
+        logging.error(f"Error processing avatar image: {e}")
+        raise ValueError("Invalid or corrupted image file")
+
+def get_avatar_url(avatar_filename: Optional[str], base_url: str = "") -> Optional[str]:
+    """Generate full URL for avatar. Returns None if no avatar."""
+    if not avatar_filename:
+        return None
+    return f"{base_url}/uploads/avatars/{avatar_filename}"
 
 security = HTTPBearer()
 
@@ -178,6 +245,10 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
 )
+
+# ============= Static File Serving =============
+# Mount uploads directory for serving avatar images
+app.mount("/uploads", StaticFiles(directory=str(AVATAR_UPLOAD_DIR.parent)), name="uploads")
 
 # ============= Middleware Stack =============
 
@@ -516,8 +587,18 @@ def _normalize_answer_submission(raw_answer, allow_multiple: bool) -> list[str]:
     # Any other scalar
     return [str(raw_answer).strip()]
 
-def _get_user_by_session(session_token: str, db: Session) -> Optional[User]:
-    """Get user from session token, verifying hash and expiry."""
+def _get_user_by_session(session_token: str, db: Session, auto_refresh: bool = True) -> Optional[User]:
+    """
+    Get user from session token, verifying hash and expiry.
+    
+    Args:
+        session_token: The plaintext session token
+        db: Database session
+        auto_refresh: If True, automatically extend session expiry on successful auth
+    
+    Returns:
+        User object if valid, None if invalid or expired
+    """
     # Find all users with potential matching tokens (limited lookup)
     users = db.query(User).all()  # In production, optimize this with indexed lookup
     
@@ -534,6 +615,12 @@ def _get_user_by_session(session_token: str, db: Session) -> Optional[User]:
         
         # Verify token hash
         if _verify_session_token(session_token, user.session_token):
+            # Auto-refresh: extend session expiry on successful authentication
+            if auto_refresh:
+                new_expiry = datetime.now(timezone.utc) + timedelta(days=SESSION_TOKEN_EXPIRY_DAYS)
+                user.session_token_expires_at = new_expiry
+                db.commit()
+                logging.debug(f"Auto-refreshed session for user {user.user_id}, new expiry: {new_expiry}")
             return user
     
     return None
@@ -1028,8 +1115,10 @@ def join_group(request: Request, user: UserCreate, db: Session = Depends(get_db)
     return UserResponse(
         id=db_user.id,
         user_id=db_user.user_id,
+        group_id=group.group_id,
         display_name=db_user.display_name,
         color_avatar=db_user.color_avatar,
+        avatar_url=get_avatar_url(db_user.avatar_filename, str(request.base_url).rstrip('/')),
         session_token=session_token_plaintext,  # Return plaintext to user (only time shown)
         created_at=db_user.created_at,
         answer_streak=db_user.answer_streak,
@@ -1045,14 +1134,65 @@ def validate_session(request: Request, session_token: str, db: Session = Depends
     if not user:
         raise HTTPException(status_code=401, detail="Invalid session")
     
+    base_url = str(request.base_url).rstrip('/')
     return {
         "valid": True,
         "user_id": user.user_id,
         "display_name": user.display_name,
         "group_id": user.group.group_id,
+        "avatar_url": get_avatar_url(user.avatar_filename, base_url),
         "answer_streak": user.answer_streak,
-        "longest_answer_streak": user.longest_answer_streak
+        "longest_answer_streak": user.longest_answer_streak,
+        "session_expires_at": user.session_token_expires_at.isoformat() if user.session_token_expires_at else None
     }
+
+
+@app.post("/api/users/refresh-session")
+@limiter.limit("30/minute")
+def refresh_session(
+    request: Request,
+    session_token: str = Header(..., alias="X-Session-Token"),
+    db: Session = Depends(get_db)
+):
+    """
+    Explicitly refresh (extend) a user's session token expiry.
+    
+    This endpoint allows users to manually extend their session without waiting
+    for auto-refresh on other API calls. Useful for:
+    - Keeping sessions alive during periods of low activity
+    - Frontend "keep me logged in" functionality
+    - Ensuring session doesn't expire during long form fills
+    
+    **Note:** Sessions are also auto-refreshed on any authenticated API call,
+    so this endpoint is only needed for explicit refresh requests.
+    
+    **Auth:** Requires valid (non-expired) session token in X-Session-Token header
+    """
+    # Don't auto-refresh here, we'll do it manually with logging
+    user = _get_user_by_session(session_token, db, auto_refresh=False)
+    
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired session token")
+    
+    # Extend session expiry
+    old_expiry = user.session_token_expires_at
+    new_expiry = datetime.now(timezone.utc) + timedelta(days=SESSION_TOKEN_EXPIRY_DAYS)
+    user.session_token_expires_at = new_expiry
+    db.commit()
+    
+    logging.info(f"Session manually refreshed for user {user.user_id}: {old_expiry} -> {new_expiry}")
+    
+    base_url = str(request.base_url).rstrip('/')
+    return {
+        "message": "Session refreshed successfully",
+        "user_id": user.user_id,
+        "display_name": user.display_name,
+        "group_id": user.group.group_id,
+        "avatar_url": get_avatar_url(user.avatar_filename, base_url),
+        "session_expires_at": new_expiry.isoformat(),
+        "expires_in_days": SESSION_TOKEN_EXPIRY_DAYS
+    }
+
 
 @app.get("/api/groups/{group_id}/members")
 @limiter.limit("200/minute")
@@ -1061,12 +1201,14 @@ def get_group_members(request: Request, group_id: str, db: Session = Depends(get
     group = get_group_by_id(group_id, db)
     
     members = db.query(User).filter(User.group_id == group.id).all()
+    base_url = str(request.base_url).rstrip('/')
     
     return [
         {
             "user_id": m.user_id,
             "display_name": m.display_name,
             "color_avatar": m.color_avatar,
+            "avatar_url": get_avatar_url(m.avatar_filename, base_url),
             "created_at": m.created_at,
             "answer_streak": m.answer_streak,
             "longest_answer_streak": m.longest_answer_streak
@@ -1650,7 +1792,7 @@ async def register_device_token(
     Requires a valid session token for the user.
     """
     # Verify session token
-    user = verify_session_token(session_token, db)
+    user = _get_user_by_session(session_token, db)
     if not user or user.user_id != user_id:
         raise HTTPException(status_code=401, detail="Invalid session token")
     
@@ -1724,7 +1866,7 @@ async def unregister_device_token(
     - Token becomes invalid
     """
     # Verify session token
-    user = verify_session_token(session_token, db)
+    user = _get_user_by_session(session_token, db)
     if not user or user.user_id != user_id:
         raise HTTPException(status_code=401, detail="Invalid session token")
     
@@ -1755,7 +1897,7 @@ async def list_device_tokens(
     Useful for showing the user their registered devices.
     """
     # Verify session token
-    user = verify_session_token(session_token, db)
+    user = _get_user_by_session(session_token, db)
     if not user or user.user_id != user_id:
         raise HTTPException(status_code=401, detail="Invalid session token")
     
@@ -1775,6 +1917,139 @@ async def list_device_tokens(
         )
         for t in tokens
     ]
+
+
+# ============= Avatar Upload Endpoints =============
+
+@app.post("/api/users/{user_id}/avatar", tags=["User Profile"])
+@limiter.limit("10/minute")
+async def upload_avatar(
+    request: Request,
+    user_id: str,
+    file: UploadFile = File(...),
+    session_token: str = Header(..., alias="X-Session-Token"),
+    db: Session = Depends(get_db)
+):
+    """
+    Upload a profile avatar image.
+    
+    **Requirements:**
+    - Max file size: 2MB
+    - Allowed formats: JPEG, PNG, GIF, WebP
+    - Image will be automatically resized to max 256x256 and converted to WebP
+    
+    **Returns:** Updated user profile with avatar_url
+    """
+    # Verify session token
+    user = _get_user_by_session(session_token, db)
+    if not user or user.user_id != user_id:
+        raise HTTPException(status_code=401, detail="Invalid session token")
+    
+    # Check file size (read in chunks to avoid memory issues)
+    file_bytes = await file.read()
+    if len(file_bytes) > AVATAR_MAX_SIZE_BYTES:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"File too large. Maximum size is {AVATAR_MAX_SIZE_MB}MB"
+        )
+    
+    # Validate content type from header
+    if file.content_type not in AVATAR_ALLOWED_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Allowed: JPEG, PNG, GIF, WebP"
+        )
+    
+    # Validate actual file content (magic bytes)
+    detected_type = validate_image_magic_bytes(file_bytes)
+    if not detected_type:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid image file. Could not verify file format."
+        )
+    
+    # Process image (resize and convert to WebP)
+    try:
+        processed_bytes = process_avatar_image(file_bytes)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    # Generate unique filename
+    filename = f"{user.user_id}_{secrets.token_hex(8)}.webp"
+    filepath = AVATAR_UPLOAD_DIR / filename
+    
+    # Delete old avatar file if exists
+    if user.avatar_filename:
+        old_filepath = AVATAR_UPLOAD_DIR / user.avatar_filename
+        if old_filepath.exists():
+            try:
+                old_filepath.unlink()
+            except Exception as e:
+                logging.warning(f"Failed to delete old avatar: {e}")
+    
+    # Save new avatar
+    try:
+        with open(filepath, "wb") as f:
+            f.write(processed_bytes)
+    except Exception as e:
+        logging.error(f"Failed to save avatar: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save avatar file")
+    
+    # Update user record
+    user.avatar_filename = filename
+    user.avatar_uploaded_at = datetime.now(timezone.utc)
+    db.commit()
+    
+    # Build avatar URL
+    base_url = str(request.base_url).rstrip("/")
+    avatar_url = f"{base_url}/uploads/avatars/{filename}"
+    
+    return {
+        "message": "Avatar uploaded successfully",
+        "avatar_url": avatar_url,
+        "avatar_filename": filename,
+        "uploaded_at": user.avatar_uploaded_at.isoformat()
+    }
+
+
+@app.delete("/api/users/{user_id}/avatar", tags=["User Profile"])
+@limiter.limit("10/minute")
+async def delete_avatar(
+    request: Request,
+    user_id: str,
+    session_token: str = Header(..., alias="X-Session-Token"),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete profile avatar and revert to color-based avatar.
+    
+    **Returns:** Confirmation message
+    """
+    # Verify session token
+    user = _get_user_by_session(session_token, db)
+    if not user or user.user_id != user_id:
+        raise HTTPException(status_code=401, detail="Invalid session token")
+    
+    if not user.avatar_filename:
+        raise HTTPException(status_code=404, detail="No avatar to delete")
+    
+    # Delete file
+    filepath = AVATAR_UPLOAD_DIR / user.avatar_filename
+    if filepath.exists():
+        try:
+            filepath.unlink()
+        except Exception as e:
+            logging.warning(f"Failed to delete avatar file: {e}")
+    
+    # Clear database fields
+    user.avatar_filename = None
+    user.avatar_uploaded_at = None
+    db.commit()
+    
+    return {
+        "message": "Avatar deleted successfully",
+        "color_avatar": user.color_avatar
+    }
 
 
 # ============= WebSocket Real-Time Endpoints =============
@@ -1900,10 +2175,12 @@ def get_leaderboard(
         key=lambda x: (x.answer_streak, x.longest_answer_streak),
         reverse=True
     )
+    base_url = str(request.base_url).rstrip('/')
     return [
         {
             "display_name": m.display_name,
             "color_avatar": m.color_avatar,
+            "avatar_url": get_avatar_url(m.avatar_filename, base_url),
             "answer_streak": m.answer_streak,
             "longest_answer_streak": m.longest_answer_streak
         }
@@ -1941,10 +2218,12 @@ def get_leaderboard_member(
         key=lambda x: (x.answer_streak, x.longest_answer_streak),
         reverse=True,
     )
+    base_url = str(request.base_url).rstrip('/')
     return [
         {
             "display_name": m.display_name,
             "color_avatar": m.color_avatar,
+            "avatar_url": get_avatar_url(m.avatar_filename, base_url),
             "answer_streak": m.answer_streak,
             "longest_answer_streak": m.longest_answer_streak,
         }

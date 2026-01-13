@@ -122,6 +122,8 @@ class User(Base):
     session_token = Column(String(255), unique=True)  # Hashed token
     session_token_expires_at = Column(DateTime, nullable=True)  # Token expiry
     color_avatar = Column(String(7), default="#3498db")
+    avatar_filename = Column(String(255), nullable=True)  # Uploaded avatar filename (e.g., "abc123.webp")
+    avatar_uploaded_at = Column(DateTime, nullable=True)  # When avatar was uploaded
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     answer_streak = Column(Integer, default=0)
     longest_answer_streak = Column(Integer, default=0)

@@ -40,6 +40,17 @@ dontAskUs is a group-based daily question and voting platform. It supports:
 - **Instance Admin Flow:** Manage users, groups, question sets, audit logs with 2FA
 - **Group Creator Flow:** Create private question sets (max 5 per group)
 
+### Automatic Daily Questions
+
+The backend **automatically generates a new question for each group every day**:
+
+- Runs on server startup and every 24 hours (configurable via `SCHEDULE_INTERVAL_SECONDS`)
+- Selects questions from assigned question sets (or public templates as fallback)
+- Never repeats a question within the same group until all are exhausted
+- Different groups receive different questions on the same day
+- Requires at least 2 members for `member_choice` and `duo_choice` questions
+- Sends push notifications to group members (if FCM is configured)
+
 ### Authentication Types
 
 | Flow            | Method              | Storage      |
@@ -97,8 +108,10 @@ Content-Type: application/json
 {
   "id": 10,
   "user_id": "uuid-here",
+  "group_id": "group-uuid-here",
   "display_name": "Alice",
   "color_avatar": "#3B82F6",
+  "avatar_url": null,
   "session_token": "plaintext-token-save-this",
   "created_at": "2025-12-17T10:00:00Z",
   "answer_streak": 0,
@@ -123,7 +136,7 @@ Content-Type: application/json
 
 ### Validate Session
 
-Check if a session token is valid.
+Check if a session token is valid. Also auto-refreshes the session expiry.
 
 ```http
 GET /api/users/validate-session/{session_token}
@@ -137,8 +150,211 @@ GET /api/users/validate-session/{session_token}
   "user_id": "uuid",
   "display_name": "Alice",
   "group_id": "group-uuid",
+  "avatar_url": "https://api.example.com/uploads/avatars/abc123.webp",
   "answer_streak": 2,
-  "longest_answer_streak": 5
+  "longest_answer_streak": 5,
+  "session_expires_at": "2026-01-20T10:00:00Z"
+}
+```
+
+---
+
+### Refresh Session
+
+Explicitly extend the session token expiry. Useful for keeping sessions alive during periods of low
+activity or for "keep me logged in" functionality.
+
+> **Note:** Sessions are automatically refreshed on any authenticated API call, so this endpoint is
+> only needed for explicit refresh requests when no other API calls are being made.
+
+```http
+POST /api/users/refresh-session
+X-Session-Token: <session_token>
+```
+
+**Headers:**
+
+- `X-Session-Token` (required): User's current session token
+
+**Response (200):**
+
+```json
+{
+  "message": "Session refreshed successfully",
+  "user_id": "uuid",
+  "display_name": "Alice",
+  "group_id": "group-uuid",
+  "avatar_url": "https://api.example.com/uploads/avatars/abc123.webp",
+  "session_expires_at": "2026-01-20T10:00:00Z",
+  "expires_in_days": 7
+}
+```
+
+**Errors:**
+
+- `401` Invalid or expired session token
+
+---
+
+## Session Management
+
+### Auto-Refresh Behavior
+
+Session tokens are **automatically extended** whenever a user makes any authenticated API call. This
+means:
+
+- Users who regularly use the app will never have their session expire
+- The session expiry is reset to `SESSION_TOKEN_EXPIRY_DAYS` (default: 7 days) from the current time
+- Only inactive users (no API calls for the full expiry period) will need to re-authenticate
+
+### Session Expiry
+
+If a session expires:
+
+1. The user's **data is preserved** (streaks, votes, display name, avatar, etc.)
+2. The user cannot make authenticated API calls until their session is recovered
+3. **Recovery options:**
+   - Admin can generate a new token via `POST /api/admin/users/{user_id}/recover-token`
+   - User must rejoin the group (creates a new account, loses streak history)
+
+### Streak Reset
+
+Answer streaks are reset to zero if a user misses answering a daily question:
+
+- If the user answers today and answered yesterday → streak continues
+- If the user answers today but last answered 2+ days ago → streak resets to 1
+- Longest streak is preserved for historical tracking
+
+---
+
+## Avatar Upload Endpoints
+
+Users can upload custom profile avatars. Images are automatically processed, resized, and converted
+to WebP format for optimal storage and delivery.
+
+### Upload Avatar
+
+Upload or replace a user's profile avatar image.
+
+```http
+POST /api/users/{user_id}/avatar
+Content-Type: multipart/form-data
+X-Session-Token: <session_token>
+
+file: <image file>
+```
+
+**Headers:**
+
+- `X-Session-Token` (required): User's session token
+
+**Request:**
+
+- File must be uploaded as `multipart/form-data` with field name `file`
+- Supported formats: JPEG, PNG, GIF, WebP
+- Maximum file size: 2MB
+- Image is automatically:
+  - Resized to max 256x256 pixels (maintains aspect ratio)
+  - Converted to WebP format
+  - Transparency converted to white background
+
+**Response (200):**
+
+```json
+{
+  "message": "Avatar uploaded successfully",
+  "avatar_url": "https://api.example.com/uploads/avatars/abc123def456.webp",
+  "avatar_filename": "abc123def456.webp",
+  "uploaded_at": "2025-12-17T10:00:00Z"
+}
+```
+
+**Errors:**
+
+- `400` No file provided
+- `400` File too large (max 2MB)
+- `400` Invalid file type (only JPEG, PNG, GIF, WebP allowed)
+- `400` Invalid or corrupted image file
+- `401` Session token required / Invalid session
+- `403` Cannot modify another user's avatar
+- `404` User not found
+
+**Example (curl):**
+
+```bash
+curl -X POST "https://api.example.com/api/users/{user_id}/avatar" \
+  -H "X-Session-Token: YOUR_TOKEN" \
+  -F "file=@/path/to/avatar.jpg"
+```
+
+**Example (JavaScript):**
+
+```javascript
+const formData = new FormData();
+formData.append("file", imageFile);
+
+const response = await fetch(`${API_URL}/api/users/${userId}/avatar`, {
+  method: "POST",
+  headers: {
+    "X-Session-Token": token
+  },
+  body: formData
+});
+```
+
+---
+
+### Delete Avatar
+
+Remove a user's profile avatar, reverting to the color avatar.
+
+```http
+DELETE /api/users/{user_id}/avatar
+X-Session-Token: <session_token>
+```
+
+**Headers:**
+
+- `X-Session-Token` (required): User's session token
+
+**Response (200):**
+
+```json
+{
+  "message": "Avatar deleted successfully",
+  "color_avatar": "#3B82F6"
+}
+```
+
+**Errors:**
+
+- `401` Session token required / Invalid session
+- `403` Cannot modify another user's avatar
+- `404` User not found / No avatar to delete
+
+---
+
+### Accessing Avatar Images
+
+Avatar images are served as static files:
+
+```http
+GET /uploads/avatars/{filename}
+```
+
+The `avatar_url` field in user responses contains the full URL to the avatar image. If `avatar_url`
+is `null`, the client should display the user's `color_avatar` as a fallback.
+
+**Example usage in frontend:**
+
+```javascript
+// Display avatar with color fallback
+function getAvatarDisplay(user) {
+  if (user.avatar_url) {
+    return `<img src="${user.avatar_url}" alt="${user.display_name}" />`;
+  } else {
+    return `<div style="background: ${user.color_avatar}">${user.display_name[0]}</div>`;
+  }
 }
 ```
 
@@ -225,17 +441,17 @@ GET /api/groups/{group_id}/members
 **Response (200):**
 
 ```json
-{
-  "members": [
-    {
-      "user_id": "uuid",
-      "display_name": "Alice",
-      "color_avatar": "#3B82F6",
-      "answer_streak": 2,
-      "longest_answer_streak": 5
-    }
-  ]
-}
+[
+  {
+    "user_id": "uuid",
+    "display_name": "Alice",
+    "color_avatar": "#3B82F6",
+    "avatar_url": "https://api.example.com/uploads/avatars/abc123.webp",
+    "created_at": "2025-12-17T10:00:00Z",
+    "answer_streak": 2,
+    "longest_answer_streak": 5
+  }
+]
 ```
 
 ---
@@ -257,6 +473,7 @@ GET /api/groups/{group_id}/leaderboard?session_token=<token>
   {
     "display_name": "Alice",
     "color_avatar": "#3B82F6",
+    "avatar_url": "https://api.example.com/uploads/avatars/abc123.webp",
     "answer_streak": 15,
     "longest_answer_streak": 20
   },
@@ -283,6 +500,10 @@ GET /api/groups/{group_id}/leaderboard?session_token=<token>
 ---
 
 ## Daily Questions & Voting
+
+**Note:** Questions are automatically generated daily by the server. See
+[Automatic Daily Questions](#automatic-daily-questions) in Overview. The endpoints below are for
+manual creation (admin override) or retrieving the current question.
 
 ### Question Types
 
