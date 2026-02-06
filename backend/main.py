@@ -39,17 +39,20 @@ from database import engine, get_db, Base, SessionLocal
 from models import (
     Group, User, DailyQuestion, Vote, QuestionTemplate, QuestionSet, QuestionSetTemplate, 
     GroupQuestionSet, UserGroupStreak, QuestionTypeEnum, AdminUser, AuditLog, GroupCustomSet,
-    UserDeviceToken,
+    UserDeviceToken, Account,
     hash_password, verify_password, generate_totp_secret, verify_totp
 )
 from push_notifications import push_service
 from schemas import (
-    GroupCreate, GroupResponse, GroupResponsePublic, UserCreate, UserResponse,
+    GroupCreate, GroupResponse, GroupResponsePublic,
     DailyQuestionCreate, DailyQuestionResponse, VoteCreate, AnswerSubmissionCreate,
     QuestionTemplateResponse, QuestionSetCreate, QuestionSetResponse, GroupQuestionSetsResponse, 
     GroupAssignSetsRequest,
     AdminLoginRequest, AdminLoginResponse, Admin2FARequest, Admin2FAResponse,
-    DeviceTokenRegister, DeviceTokenResponse, PushNotificationStatus
+    DeviceTokenRegister, DeviceTokenResponse, PushNotificationStatus,
+    AuthRegisterRequest, AuthLoginRequest, AuthTokenResponse, AuthRefreshRequest,
+    AccountResponse, AccountGroupMembership, AccountMeResponse,
+    UserChangePasswordRequest, JoinGroupRequest,
 )
 from seed_defaults import initialize_default_question_set, assign_default_set_to_unassigned_groups
 from ws_manager import manager
@@ -80,7 +83,6 @@ logging.basicConfig(
 
 # ============= Application Configuration =============
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000,http://localhost:8085,http://127.0.0.1:8085").split(",")
-SESSION_TOKEN_EXPIRY_DAYS = int(os.getenv("SESSION_TOKEN_EXPIRY_DAYS", "7"))
 
 # ============= Avatar Upload Configuration =============
 AVATAR_UPLOAD_DIR = Path(__file__).parent / "uploads" / "avatars"
@@ -173,6 +175,147 @@ def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(securi
     if not admin:
         raise HTTPException(status_code=401, detail="Admin not found or inactive")
     return admin
+
+# ============= User Auth Config =============
+USER_JWT_SECRET = os.getenv("USER_JWT_SECRET", os.getenv("ADMIN_JWT_SECRET", "supersecretkey") + "_user")
+USER_JWT_ALGO = "HS256"
+USER_JWT_ACCESS_EXPIRE_MINUTES = int(os.getenv("USER_JWT_ACCESS_EXPIRE_MINUTES", "30"))  # 30 min
+USER_JWT_REFRESH_EXPIRE_DAYS = int(os.getenv("USER_JWT_REFRESH_EXPIRE_DAYS", "30"))  # 30 days
+MAX_LOGIN_ATTEMPTS = 10
+LOCKOUT_DURATION_MINUTES = 15
+
+def create_user_jwt(account_id: int, token_type: str = "access") -> str:
+    """Create a JWT token for user authentication."""
+    if token_type == "access":
+        exp = datetime.utcnow() + timedelta(minutes=USER_JWT_ACCESS_EXPIRE_MINUTES)
+    else:  # refresh
+        exp = datetime.utcnow() + timedelta(days=USER_JWT_REFRESH_EXPIRE_DAYS)
+    payload = {
+        "sub": str(account_id),
+        "type": token_type,
+        "exp": exp,
+        "iat": datetime.utcnow(),
+    }
+    return jwt.encode(payload, USER_JWT_SECRET, algorithm=USER_JWT_ALGO)
+
+
+def verify_user_jwt(token: str, expected_type: str = "access") -> int:
+    """Verify a user JWT token and return the account ID."""
+    try:
+        payload = jwt.decode(token, USER_JWT_SECRET, algorithms=[USER_JWT_ALGO])
+        if payload.get("type") != expected_type:
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        return int(payload["sub"])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
+def get_current_account(
+    request: Request,
+    db: Session = Depends(get_db)
+) -> Account:
+    """
+    Dependency to get the current authenticated user account from Bearer token.
+    Used for all user-facing endpoints that require authentication.
+    """
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization header required")
+    
+    token = auth_header.split(" ", 1)[1]
+    account_id = verify_user_jwt(token, "access")
+    account = db.query(Account).filter(Account.id == account_id, Account.is_active == True).first()
+    if not account:
+        raise HTTPException(status_code=401, detail="Account not found or deactivated")
+    return account
+
+
+def get_current_account_optional(
+    request: Request,
+    db: Session = Depends(get_db)
+) -> Optional[Account]:
+    """
+    Dependency that optionally gets the current authenticated account.
+    Returns None if no valid auth is provided (no error raised).
+    """
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return None
+    try:
+        token = auth_header.split(" ", 1)[1]
+        account_id = verify_user_jwt(token, "access")
+        return db.query(Account).filter(Account.id == account_id, Account.is_active == True).first()
+    except HTTPException:
+        return None
+
+
+def _get_membership(account: Account, group_id: int, db: Session) -> Optional[User]:
+    """Get the User (membership) record for an account in a specific group."""
+    return db.query(User).filter(
+        and_(User.account_id == account.id, User.group_id == group_id)
+    ).first()
+
+
+def _get_user_from_request(
+    request: Request,
+    db: Session,
+    user_id: Optional[str] = None,
+) -> Optional[User]:
+    """
+    Auth helper: resolves a User from JWT Bearer token.
+    
+    Args:
+        user_id: Optional user_id (UUID) to match a specific group membership for the account
+    
+    Returns the User (group membership) object or None.
+    """
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        try:
+            token = auth_header.split(" ", 1)[1]
+            account_id_int = verify_user_jwt(token, "access")
+            account = db.query(Account).filter(Account.id == account_id_int, Account.is_active == True).first()
+            if account:
+                # If user_id specified, find that specific membership
+                if user_id:
+                    specific = db.query(User).filter(
+                        and_(User.account_id == account.id, User.user_id == user_id)
+                    ).first()
+                    if specific:
+                        return specific
+                # Otherwise return first membership
+                memberships = db.query(User).filter(User.account_id == account.id).all()
+                if memberships:
+                    return memberships[0]
+        except HTTPException:
+            pass
+    
+    return None
+
+
+def _get_user_for_group(
+    request: Request,
+    group: Group,
+    db: Session,
+) -> Optional[User]:
+    """
+    Resolve the authenticated user's membership in a specific group.
+    Uses JWT Bearer token auth.
+    """
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        try:
+            token = auth_header.split(" ", 1)[1]
+            account_id_int = verify_user_jwt(token, "access")
+            account = db.query(Account).filter(Account.id == account_id_int, Account.is_active == True).first()
+            if account:
+                return _get_membership(account, group.id, db)
+        except HTTPException:
+            pass
+    
+    return None
 
 # ============= Background Scheduler =============
 _scheduler_thread = None
@@ -401,10 +544,6 @@ def generate_invite_code() -> str:
     """Generate a unique 6-8 character invite code"""
     return ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
 
-def generate_session_token() -> str:
-    """Generate a secure session token"""
-    return secrets.token_urlsafe(32)
-
 def generate_admin_token() -> str:
     """Generate secure admin token"""
     return secrets.token_urlsafe(32)
@@ -412,13 +551,6 @@ def generate_admin_token() -> str:
 def _hash_and_store_token(plaintext_token: str) -> str:
     """Hash a token for secure storage in database."""
     return hash_token(plaintext_token)
-
-def _verify_session_token(plaintext_token: str, stored_hash: str) -> bool:
-    """Verify a plaintext session token against its hash."""
-    try:
-        return verify_token(plaintext_token, stored_hash)
-    except Exception:
-        return False
 
 def get_random_avatar_color() -> str:
     """Return a random avatar color from predefined palette"""
@@ -586,44 +718,6 @@ def _normalize_answer_submission(raw_answer, allow_multiple: bool) -> list[str]:
 
     # Any other scalar
     return [str(raw_answer).strip()]
-
-def _get_user_by_session(session_token: str, db: Session, auto_refresh: bool = True) -> Optional[User]:
-    """
-    Get user from session token, verifying hash and expiry.
-    
-    Args:
-        session_token: The plaintext session token
-        db: Database session
-        auto_refresh: If True, automatically extend session expiry on successful auth
-    
-    Returns:
-        User object if valid, None if invalid or expired
-    """
-    # Find all users with potential matching tokens (limited lookup)
-    users = db.query(User).all()  # In production, optimize this with indexed lookup
-    
-    for user in users:
-        # Check if token is expired
-        if user.session_token_expires_at:
-            # Ensure both datetimes are timezone-aware for comparison
-            expires_at = user.session_token_expires_at
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
-            if datetime.now(timezone.utc) > expires_at:
-                logging.info(f"Session token expired for user {user.user_id}")
-                return None
-        
-        # Verify token hash
-        if _verify_session_token(session_token, user.session_token):
-            # Auto-refresh: extend session expiry on successful authentication
-            if auto_refresh:
-                new_expiry = datetime.now(timezone.utc) + timedelta(days=SESSION_TOKEN_EXPIRY_DAYS)
-                user.session_token_expires_at = new_expiry
-                db.commit()
-                logging.debug(f"Auto-refreshed session for user {user.user_id}, new expiry: {new_expiry}")
-            return user
-    
-    return None
 
 def _get_user_vote(user_id: int, question_id: int, db: Session) -> Optional[str]:
     """Get user's vote answer for a question"""
@@ -970,6 +1064,375 @@ def _create_today_question_for_group(db: Session, group: Group):
     db.refresh(dq)
     return dq
 
+# ============= User Authentication Routes =============
+
+@app.post("/api/auth/register", response_model=AuthTokenResponse, tags=["User Auth"])
+@limiter.limit("10/minute")
+def register_account(request: Request, body: AuthRegisterRequest, db: Session = Depends(get_db)):
+    """
+    Register a new user account with email and password.
+    
+    **Password Requirements:**
+    - Minimum 8 characters
+    - At least one uppercase letter
+    - At least one lowercase letter  
+    - At least one digit
+    
+    Returns JWT access and refresh tokens on success.
+    """
+    # Check if email already registered
+    existing = db.query(Account).filter(
+        func.lower(Account.email) == body.email.lower()
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Email already registered")
+    
+    # Create account
+    account = Account(
+        email=body.email.lower().strip(),
+        password_hash=hash_password(body.password),
+        display_name=body.display_name.strip(),
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    
+    logging.info(f"New account registered: {account.account_id} ({account.email})")
+    
+    # Issue tokens
+    access_token = create_user_jwt(account.id, "access")
+    refresh_token = create_user_jwt(account.id, "refresh")
+    
+    return AuthTokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        expires_in=USER_JWT_ACCESS_EXPIRE_MINUTES * 60,
+        account_id=account.account_id,
+        display_name=account.display_name,
+        email=account.email,
+    )
+
+
+@app.post("/api/auth/login", response_model=AuthTokenResponse, tags=["User Auth"])
+@limiter.limit("10/minute")
+def login_account(request: Request, body: AuthLoginRequest, db: Session = Depends(get_db)):
+    """
+    Login with email and password.
+    
+    Returns JWT access and refresh tokens on success.
+    Account will be locked for 15 minutes after 10 failed attempts.
+    """
+    account = db.query(Account).filter(
+        func.lower(Account.email) == body.email.lower()
+    ).first()
+    
+    if not account:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    if not account.is_active:
+        raise HTTPException(status_code=403, detail="Account is deactivated")
+    
+    # Check lockout
+    if account.is_locked_until:
+        lock_until = account.is_locked_until
+        if lock_until.tzinfo is None:
+            lock_until = lock_until.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) < lock_until:
+            remaining = int((lock_until - datetime.now(timezone.utc)).total_seconds() / 60)
+            raise HTTPException(
+                status_code=429,
+                detail=f"Account temporarily locked. Try again in {remaining} minutes."
+            )
+        else:
+            # Lockout expired, reset
+            account.is_locked_until = None
+            account.login_attempt_count = 0
+    
+    # Verify password
+    if not account.check_password(body.password):
+        account.login_attempt_count = (account.login_attempt_count or 0) + 1
+        account.last_login_attempt = datetime.now(timezone.utc)
+        if account.login_attempt_count >= MAX_LOGIN_ATTEMPTS:
+            account.is_locked_until = datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+            db.commit()
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many failed attempts. Account locked for {LOCKOUT_DURATION_MINUTES} minutes."
+            )
+        db.commit()
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    # Successful login
+    account.login_attempt_count = 0
+    account.is_locked_until = None
+    account.last_login = datetime.now(timezone.utc)
+    account.last_login_ip = request.client.host if request.client else None
+    db.commit()
+    
+    logging.info(f"Account login: {account.account_id} ({account.email})")
+    
+    access_token = create_user_jwt(account.id, "access")
+    refresh_token = create_user_jwt(account.id, "refresh")
+    
+    return AuthTokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        expires_in=USER_JWT_ACCESS_EXPIRE_MINUTES * 60,
+        account_id=account.account_id,
+        display_name=account.display_name,
+        email=account.email,
+    )
+
+
+@app.post("/api/auth/refresh", response_model=AuthTokenResponse, tags=["User Auth"])
+@limiter.limit("30/minute")
+def refresh_user_token(request: Request, body: AuthRefreshRequest, db: Session = Depends(get_db)):
+    """
+    Refresh an access token using a valid refresh token.
+    
+    Returns new access and refresh tokens.
+    """
+    account_id = verify_user_jwt(body.refresh_token, "refresh")
+    account = db.query(Account).filter(Account.id == account_id, Account.is_active == True).first()
+    if not account:
+        raise HTTPException(status_code=401, detail="Account not found or deactivated")
+    
+    access_token = create_user_jwt(account.id, "access")
+    refresh_token = create_user_jwt(account.id, "refresh")
+    
+    return AuthTokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        expires_in=USER_JWT_ACCESS_EXPIRE_MINUTES * 60,
+        account_id=account.account_id,
+        display_name=account.display_name,
+        email=account.email,
+    )
+
+
+@app.get("/api/auth/me", response_model=AccountMeResponse, tags=["User Auth"])
+@limiter.limit("200/minute")
+def get_me(
+    request: Request,
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db)
+):
+    """
+    Get the current authenticated user's account info and all group memberships.
+    
+    **Auth:** Requires valid Bearer token in Authorization header.
+    """
+    base_url = str(request.base_url).rstrip('/')
+    
+    # Get all memberships
+    memberships = db.query(User).filter(User.account_id == account.id).all()
+    groups = []
+    for m in memberships:
+        group = db.query(Group).filter(Group.id == m.group_id).first()
+        if group:
+            groups.append(AccountGroupMembership(
+                user_id=m.user_id,
+                group_id=group.group_id,
+                group_name=group.name,
+                display_name=m.display_name,
+                color_avatar=m.color_avatar or "#3498db",
+                avatar_url=get_avatar_url(m.avatar_filename, base_url),
+                answer_streak=m.answer_streak or 0,
+                longest_answer_streak=m.longest_answer_streak or 0,
+                joined_at=m.created_at,
+            ))
+    
+    return AccountMeResponse(
+        account=AccountResponse(
+            account_id=account.account_id,
+            email=account.email,
+            display_name=account.display_name,
+            is_active=account.is_active,
+            is_verified=account.is_verified,
+            created_at=account.created_at,
+            last_login=account.last_login,
+        ),
+        groups=groups,
+    )
+
+
+@app.post("/api/auth/change-password", tags=["User Auth"])
+@limiter.limit("5/minute")
+def change_password(
+    request: Request,
+    body: UserChangePasswordRequest,
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db)
+):
+    """
+    Change the current user's password.
+    
+    Requires the current password for verification.
+    """
+    if not account.check_password(body.current_password):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    
+    account.password_hash = hash_password(body.new_password)
+    account.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    
+    logging.info(f"Password changed for account {account.account_id}")
+    
+    return {"message": "Password changed successfully"}
+
+
+@app.post("/api/auth/groups/join", response_model=AccountGroupMembership, tags=["User Auth"])
+@limiter.limit("30/minute")
+def join_group_authenticated(
+    request: Request,
+    body: JoinGroupRequest,
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db)
+):
+    """
+    Join a group using invite code (authenticated).
+    
+    Creates a group membership for the current account. 
+    Uses the account's display name by default, or an optional per-group display name.
+    
+    **Auth:** Requires valid Bearer token in Authorization header.
+    """
+    # Find group
+    group = db.query(Group).filter(
+        Group.invite_code == body.invite_code.strip().upper()
+    ).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found. Invalid invite code.")
+    
+    # Check if already a member
+    existing = db.query(User).filter(
+        and_(User.account_id == account.id, User.group_id == group.id)
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="You are already a member of this group")
+    
+    # Determine display name
+    display_name = (body.display_name or account.display_name).strip()
+    
+    # Check display name uniqueness in group
+    name_taken = db.query(User).filter(
+        and_(User.group_id == group.id, User.display_name == display_name)
+    ).first()
+    if name_taken:
+        raise HTTPException(status_code=400, detail="Display name already taken in this group")
+    
+    avatar_color = body.color_avatar or get_random_avatar_color()
+    
+    db_user = User(
+        account_id=account.id,
+        group_id=group.id,
+        display_name=display_name,
+        color_avatar=avatar_color,
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    
+    base_url = str(request.base_url).rstrip('/')
+    
+    logging.info(f"Account {account.account_id} joined group {group.group_id} as '{display_name}'")
+    
+    return AccountGroupMembership(
+        user_id=db_user.user_id,
+        group_id=group.group_id,
+        group_name=group.name,
+        display_name=db_user.display_name,
+        color_avatar=db_user.color_avatar,
+        avatar_url=get_avatar_url(db_user.avatar_filename, base_url),
+        answer_streak=db_user.answer_streak or 0,
+        longest_answer_streak=db_user.longest_answer_streak or 0,
+        joined_at=db_user.created_at,
+    )
+
+
+@app.post("/api/auth/groups/create", tags=["User Auth"])
+@limiter.limit("20/minute")
+def create_group_authenticated(
+    request: Request,
+    group: GroupCreate,
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new group (authenticated).
+    
+    The current account automatically becomes a member and the group creator.
+    Returns the group info including the admin_token (shown only once).
+    
+    **Auth:** Requires valid Bearer token in Authorization header.
+    """
+    invite_code = generate_invite_code()
+    admin_token_plaintext = generate_admin_token()
+    admin_token_hash = _hash_and_store_token(admin_token_plaintext)
+    
+    while db.query(Group).filter(Group.invite_code == invite_code).first():
+        invite_code = generate_invite_code()
+    
+    db_group = Group(
+        name=group.name,
+        invite_code=invite_code,
+        admin_token=admin_token_hash,
+    )
+    db.add(db_group)
+    db.commit()
+    db.refresh(db_group)
+    
+    # Create the creator's membership
+    db_user = User(
+        account_id=account.id,
+        group_id=db_group.id,
+        display_name=account.display_name,
+        color_avatar=get_random_avatar_color(),
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    
+    # Set creator_id
+    db_group.creator_id = db_user.id
+    
+    # Generate QR code
+    qr_data = _generate_qr_code(invite_code)
+    db_group.qr_data = qr_data
+    db.commit()
+    
+    # Assign Default question set
+    try:
+        default_set = db.query(QuestionSet).filter(QuestionSet.name == "Default").first()
+        if not default_set:
+            initialize_default_question_set()
+            default_set = db.query(QuestionSet).filter(QuestionSet.name == "Default").first()
+        if default_set:
+            existing = db.query(GroupQuestionSet).filter(
+                GroupQuestionSet.group_id == db_group.id,
+                GroupQuestionSet.question_set_id == default_set.id,
+            ).first()
+            if not existing:
+                db.add(GroupQuestionSet(group_id=db_group.id, question_set_id=default_set.id, is_active=True))
+                db.commit()
+    except Exception:
+        logging.exception("Failed to assign Default question set to new group")
+    
+    logging.info(f"Account {account.account_id} created group {db_group.group_id} ('{group.name}')")
+    
+    return {
+        "id": db_group.id,
+        "group_id": db_group.group_id,
+        "name": db_group.name,
+        "invite_code": db_group.invite_code,
+        "admin_token": admin_token_plaintext,
+        "created_at": db_group.created_at.isoformat(),
+        "member_count": 1,
+    }
+
 # ============= Group Routes =============
 
 @app.post("/api/groups", response_model=GroupResponse)
@@ -1066,132 +1529,8 @@ def get_group_full_info(
     }
 
 # ============= User Routes =============
-
-@app.post("/api/users/join", response_model=UserResponse)
-@limiter.limit("30/minute")
-def join_group(request: Request, user: UserCreate, db: Session = Depends(get_db)):
-    """Join a group with invite code and create user session"""
-    
-    # Find group by invite code
-    group = db.query(Group).filter(
-        Group.invite_code == user.group_invite_code
-    ).first()
-    
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found. Invalid invite code.")
-    
-    # Check if user with same display name exists in group
-    existing_user = db.query(User).filter(
-        and_(
-            User.group_id == group.id,
-            User.display_name == user.display_name
-        )
-    ).first()
-    
-    if existing_user:
-        raise HTTPException(
-            status_code=400,
-            detail="Display name already taken in this group"
-        )
-    
-    # Create new user session
-    session_token_plaintext = generate_session_token()
-    session_token_hash = _hash_and_store_token(session_token_plaintext)
-    session_expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_TOKEN_EXPIRY_DAYS)
-    avatar_color = user.color_avatar or get_random_avatar_color()
-    
-    db_user = User(
-        group_id=group.id,
-        display_name=user.display_name,
-        session_token=session_token_hash,  # Store hash
-        session_token_expires_at=session_expires_at,  # Set expiry
-        color_avatar=avatar_color
-    )
-    
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    
-    return UserResponse(
-        id=db_user.id,
-        user_id=db_user.user_id,
-        group_id=group.group_id,
-        display_name=db_user.display_name,
-        color_avatar=db_user.color_avatar,
-        avatar_url=get_avatar_url(db_user.avatar_filename, str(request.base_url).rstrip('/')),
-        session_token=session_token_plaintext,  # Return plaintext to user (only time shown)
-        created_at=db_user.created_at,
-        answer_streak=db_user.answer_streak,
-        longest_answer_streak=db_user.longest_answer_streak
-    )
-
-@app.get("/api/users/validate-session/{session_token}")
-@limiter.limit("200/minute")
-def validate_session(request: Request, session_token: str, db: Session = Depends(get_db)):
-    """Validate user session token"""
-    user = _get_user_by_session(session_token, db)
-    
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid session")
-    
-    base_url = str(request.base_url).rstrip('/')
-    return {
-        "valid": True,
-        "user_id": user.user_id,
-        "display_name": user.display_name,
-        "group_id": user.group.group_id,
-        "avatar_url": get_avatar_url(user.avatar_filename, base_url),
-        "answer_streak": user.answer_streak,
-        "longest_answer_streak": user.longest_answer_streak,
-        "session_expires_at": user.session_token_expires_at.isoformat() if user.session_token_expires_at else None
-    }
-
-
-@app.post("/api/users/refresh-session")
-@limiter.limit("30/minute")
-def refresh_session(
-    request: Request,
-    session_token: str = Header(..., alias="X-Session-Token"),
-    db: Session = Depends(get_db)
-):
-    """
-    Explicitly refresh (extend) a user's session token expiry.
-    
-    This endpoint allows users to manually extend their session without waiting
-    for auto-refresh on other API calls. Useful for:
-    - Keeping sessions alive during periods of low activity
-    - Frontend "keep me logged in" functionality
-    - Ensuring session doesn't expire during long form fills
-    
-    **Note:** Sessions are also auto-refreshed on any authenticated API call,
-    so this endpoint is only needed for explicit refresh requests.
-    
-    **Auth:** Requires valid (non-expired) session token in X-Session-Token header
-    """
-    # Don't auto-refresh here, we'll do it manually with logging
-    user = _get_user_by_session(session_token, db, auto_refresh=False)
-    
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid or expired session token")
-    
-    # Extend session expiry
-    old_expiry = user.session_token_expires_at
-    new_expiry = datetime.now(timezone.utc) + timedelta(days=SESSION_TOKEN_EXPIRY_DAYS)
-    user.session_token_expires_at = new_expiry
-    db.commit()
-    
-    logging.info(f"Session manually refreshed for user {user.user_id}: {old_expiry} -> {new_expiry}")
-    
-    base_url = str(request.base_url).rstrip('/')
-    return {
-        "message": "Session refreshed successfully",
-        "user_id": user.user_id,
-        "display_name": user.display_name,
-        "group_id": user.group.group_id,
-        "avatar_url": get_avatar_url(user.avatar_filename, base_url),
-        "session_expires_at": new_expiry.isoformat(),
-        "expires_in_days": SESSION_TOKEN_EXPIRY_DAYS
-    }
+# Legacy session-token-based routes removed.
+# Use /api/auth/register, /api/auth/login, /api/auth/groups/join instead.
 
 
 @app.get("/api/groups/{group_id}/members")
@@ -1537,7 +1876,6 @@ def get_group_question_sets(group_id: str, db: Session = Depends(get_db)):
 def get_todays_question(
     request: Request,
     group_id: str = PathParam(...),
-    session_token: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     """Get today's question for a group"""
@@ -1560,16 +1898,15 @@ def get_todays_question(
     option_counts = _get_option_counts(question.id, db)
     total_votes = db.query(func.count(Vote.id)).filter(Vote.question_id == question.id).scalar() or 0
     
-    # Get user's vote if authenticated
+    # Get user's vote if authenticated via JWT Bearer token
     user_vote = None
     user_streak = 0
     longest_streak = 0
-    if session_token:
-        user = _get_user_by_session(session_token, db)
-        if user:
-            user_vote = _get_user_vote(user.id, question.id, db)
-            user_streak = user.answer_streak
-            longest_streak = user.longest_answer_streak
+    user = _get_user_for_group(request, group, db)
+    if user:
+        user_vote = _get_user_vote(user.id, question.id, db)
+        user_streak = user.answer_streak
+        longest_streak = user.longest_answer_streak
     
     return DailyQuestionResponse(
         id=question.id,
@@ -1596,19 +1933,16 @@ def submit_answer(
     group_id: str = PathParam(...),
     question_id: str = PathParam(...),
     answer: AnswerSubmissionCreate = None,
-    session_token: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     """Submit an answer (binary, single-choice, or free-text) to a question"""
     
-    if not session_token:
-        raise HTTPException(status_code=401, detail="Session token required")
-    
-    user = _get_user_by_session(session_token, db)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid session")
-    
     group = get_group_by_id(group_id, db)
+    
+    # JWT auth required
+    user = _get_user_for_group(request, group, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
     
     if user.group_id != group.id:
         raise HTTPException(status_code=403, detail="User not in this group")
@@ -1778,7 +2112,6 @@ async def register_device_token(
     request: Request,
     user_id: str,
     token_data: DeviceTokenRegister,
-    session_token: str = Header(..., alias="X-Session-Token"),
     db: Session = Depends(get_db)
 ):
     """
@@ -1789,12 +2122,12 @@ async def register_device_token(
     - Streak reminders
     - Group activity
     
-    Requires a valid session token for the user.
+    Requires a valid Bearer token in Authorization header.
     """
-    # Verify session token
-    user = _get_user_by_session(session_token, db)
+    # Verify auth via JWT
+    user = _get_user_from_request(request, db, user_id=user_id)
     if not user or user.user_id != user_id:
-        raise HTTPException(status_code=401, detail="Invalid session token")
+        raise HTTPException(status_code=401, detail="Invalid authentication")
     
     if not push_service.is_enabled():
         raise HTTPException(
@@ -1854,7 +2187,6 @@ async def unregister_device_token(
     request: Request,
     user_id: str,
     token: str = Query(..., description="The device token to remove"),
-    session_token: str = Header(..., alias="X-Session-Token"),
     db: Session = Depends(get_db)
 ):
     """
@@ -1865,10 +2197,10 @@ async def unregister_device_token(
     - User disables notifications
     - Token becomes invalid
     """
-    # Verify session token
-    user = _get_user_by_session(session_token, db)
+    # Verify auth via JWT
+    user = _get_user_from_request(request, db, user_id=user_id)
     if not user or user.user_id != user_id:
-        raise HTTPException(status_code=401, detail="Invalid session token")
+        raise HTTPException(status_code=401, detail="Invalid authentication")
     
     # Find and delete the token
     device_token = db.query(UserDeviceToken).filter(
@@ -1887,8 +2219,8 @@ async def unregister_device_token(
 
 @app.get("/api/users/{user_id}/device-tokens", response_model=list[DeviceTokenResponse], tags=["Push Notifications"])
 async def list_device_tokens(
+    request: Request,
     user_id: str,
-    session_token: str = Header(..., alias="X-Session-Token"),
     db: Session = Depends(get_db)
 ):
     """
@@ -1896,10 +2228,10 @@ async def list_device_tokens(
     
     Useful for showing the user their registered devices.
     """
-    # Verify session token
-    user = _get_user_by_session(session_token, db)
+    # Verify auth via JWT
+    user = _get_user_from_request(request, db, user_id=user_id)
     if not user or user.user_id != user_id:
-        raise HTTPException(status_code=401, detail="Invalid session token")
+        raise HTTPException(status_code=401, detail="Invalid authentication")
     
     tokens = db.query(UserDeviceToken).filter(
         UserDeviceToken.user_id == user.id,
@@ -1927,7 +2259,6 @@ async def upload_avatar(
     request: Request,
     user_id: str,
     file: UploadFile = File(...),
-    session_token: str = Header(..., alias="X-Session-Token"),
     db: Session = Depends(get_db)
 ):
     """
@@ -1940,10 +2271,10 @@ async def upload_avatar(
     
     **Returns:** Updated user profile with avatar_url
     """
-    # Verify session token
-    user = _get_user_by_session(session_token, db)
+    # Verify auth via JWT
+    user = _get_user_from_request(request, db, user_id=user_id)
     if not user or user.user_id != user_id:
-        raise HTTPException(status_code=401, detail="Invalid session token")
+        raise HTTPException(status_code=401, detail="Invalid authentication")
     
     # Check file size (read in chunks to avoid memory issues)
     file_bytes = await file.read()
@@ -2017,7 +2348,6 @@ async def upload_avatar(
 async def delete_avatar(
     request: Request,
     user_id: str,
-    session_token: str = Header(..., alias="X-Session-Token"),
     db: Session = Depends(get_db)
 ):
     """
@@ -2025,10 +2355,10 @@ async def delete_avatar(
     
     **Returns:** Confirmation message
     """
-    # Verify session token
-    user = _get_user_by_session(session_token, db)
+    # Verify auth via JWT
+    user = _get_user_from_request(request, db, user_id=user_id)
     if not user or user.user_id != user_id:
-        raise HTTPException(status_code=401, detail="Invalid session token")
+        raise HTTPException(status_code=401, detail="Invalid authentication")
     
     if not user.avatar_filename:
         raise HTTPException(status_code=404, detail="No avatar to delete")
@@ -2082,7 +2412,17 @@ async def websocket_endpoint(
                         DailyQuestion.question_id == question_id
                     ).first()
                     if question:
-                        user = _get_user_by_session(message.get("session_token"), db)
+                        # JWT token auth for WebSocket
+                        user = None
+                        ws_token = message.get("token")
+                        if ws_token:
+                            try:
+                                acct_id = verify_user_jwt(ws_token, "access")
+                                acct = db.query(Account).filter(Account.id == acct_id, Account.is_active == True).first()
+                                if acct and group:
+                                    user = _get_membership(acct, group.id, db)
+                            except HTTPException:
+                                pass
                         if user:
                             options_list = json.loads(question.options) if question.options else []
                             allow_multiple = bool(getattr(question, "allow_multiple", False))
@@ -2188,27 +2528,23 @@ def get_leaderboard(
     ]
 
 
-# Member-accessible leaderboard (session-token based)
+# Member-accessible leaderboard (JWT-based)
 @app.get("/api/groups/{group_id}/leaderboard")
 @limiter.limit("200/minute")
 def get_leaderboard_member(
     request: Request,
     group_id: str = PathParam(...),
-    session_token: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     """Get group leaderboard by answer streak (any member with a valid session).
 
-    Auth: Requires a valid `session_token` for a user in the specified group.
+    Auth: Requires a valid Bearer token for a user in the specified group.
     """
-    if not session_token:
-        raise HTTPException(status_code=401, detail="Session token required")
-
     group = get_group_by_id(group_id, db)
 
-    user = _get_user_by_session(session_token, db)
+    user = _get_user_for_group(request, group, db)
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid session")
+        raise HTTPException(status_code=401, detail="Authentication required")
     if user.group_id != group.id:
         raise HTTPException(status_code=403, detail="User not in this group")
 
@@ -2355,7 +2691,7 @@ from admin_auth import (
 from admin_schemas import (
     AdminLoginRequest, AdminLoginResponse, AdminTOTPVerifyRequest, AdminTokenResponse,
     AdminRefreshRequest, AdminProfileResponse, AdminDashboardStats, UserSuspensionRequest,
-    TokenRecoveryRequest, TokenRecoveryResponse, AuditLogResponse,
+    AccountPasswordResetRequest, AccountPasswordResetResponse, AuditLogResponse,
     ChangePasswordRequest, TOTPSetupStartResponse, TOTPSetupVerifyRequest
 )
 from typing import Union
@@ -2862,7 +3198,8 @@ async def list_all_users(
                 "answer_streak": u.answer_streak,
                 "longest_answer_streak": u.longest_answer_streak,
                 "last_answer_date": u.last_answer_date,
-                "session_token_expires_at": u.session_token_expires_at,
+                "account_id": u.account.account_id if u.account else None,
+                "account_email": u.account.email if u.account else None,
                 "is_suspended": u.is_suspended,
                 "suspension_reason": u.suspension_reason,
                 "last_known_ip": str(u.last_known_ip) if u.last_known_ip else None
@@ -2922,16 +3259,17 @@ async def update_user_suspension(
     return {"message": "User suspension status updated", "user_id": user_id}
 
 
-@app.post("/api/admin/users/{user_id}/recover-token")
-async def recover_user_token(
+@app.post("/api/admin/users/{user_id}/reset-password")
+async def admin_reset_user_password(
     user_id: int,
-    request: TokenRecoveryRequest,
+    request: AccountPasswordResetRequest,
     admin: AdminUser = Depends(get_current_admin),
     ip: str = Header(None),
     db: Session = Depends(get_db)
 ):
     """
-    Generate a new session token for a user (for account recovery).
+    Reset a user account's password (admin recovery).
+    The user must have an account linked.
     """
     ip_address = ip or "unknown"
     
@@ -2939,30 +3277,32 @@ async def recover_user_token(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Generate new token
-    new_token_plaintext = generate_session_token()
-    new_token_hash = _hash_and_store_token(new_token_plaintext)
+    if not user.account:
+        raise HTTPException(status_code=400, detail="User has no linked account. Cannot reset password.")
     
-    user.session_token = new_token_hash
-    user.session_token_expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_TOKEN_EXPIRY_DAYS)
+    account = user.account
+    account.set_password(request.new_password)
+    account.is_locked_until = None
+    account.login_attempt_count = 0
+    account.updated_at = datetime.now(timezone.utc)
     db.commit()
     
     # Log action
     log_admin_action(
         admin_id=admin.id,
-        action="RECOVER_USER_TOKEN",
-        target_type="USER",
-        target_id=user_id,
+        action="RESET_USER_PASSWORD",
+        target_type="ACCOUNT",
+        target_id=account.id,
         before_state=None,
-        after_state={"token_regenerated": True},
+        after_state={"password_reset": True, "account_email": account.email, "lockout_cleared": True},
         ip_address=ip_address,
         reason=request.reason,
         db=db
     )
     
-    return TokenRecoveryResponse(
-        session_token=new_token_plaintext,
-        message=f"New session token generated for user {user.display_name}"
+    return AccountPasswordResetResponse(
+        message=f"Password reset for {account.email}",
+        account_email=account.email
     )
 
 
@@ -3136,8 +3476,8 @@ async def get_admin_question_set_questions(
 @app.post("/api/groups/{group_id}/question-sets/private")
 async def create_private_question_set(
     group_id: int,
-    request: dict,
-    session_token: str = Header(None),
+    body: dict,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """
@@ -3158,20 +3498,17 @@ async def create_private_question_set(
         ]
     }
     """
-    # Verify user and get session
-    user = db.query(User).filter(
-        and_(User.group_id == group_id, User.session_token == hash_token(session_token))
-    ).first()
-    
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid session token")
+    # Verify user via JWT
+    user = _get_user_from_request(request, db)
+    if not user or user.group_id != group_id:
+        raise HTTPException(status_code=401, detail="Invalid authentication")
     
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     
     # Check if user is group creator
-    if group.created_by != user.email:
+    if group.creator_id != user.id:
         raise HTTPException(status_code=403, detail="Only group creator can create private sets")
     
     # Check set limit (max 5 private sets per group)
@@ -3186,14 +3523,14 @@ async def create_private_question_set(
         )
     
     # Validate request
-    name = request.get("name", "").strip()
+    name = body.get("name", "").strip()
     if not name or len(name) < 3:
         raise HTTPException(status_code=400, detail="Set name must be at least 3 characters")
     
     if len(name) > 200:
         raise HTTPException(status_code=400, detail="Set name cannot exceed 200 characters")
     
-    questions = request.get("questions", [])
+    questions = body.get("questions", [])
     if not questions:
         raise HTTPException(status_code=400, detail="At least one question is required")
     
@@ -3269,7 +3606,7 @@ async def create_private_question_set(
 @app.get("/api/groups/{group_id}/question-sets/my")
 async def list_group_creator_sets(
     group_id: int,
-    session_token: str = Header(None),
+    request: Request,
     db: Session = Depends(get_db),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0)
@@ -3278,20 +3615,17 @@ async def list_group_creator_sets(
     List all private question sets created by the group creator for this group.
     Only group creator can access this endpoint.
     """
-    # Verify user and get session
-    user = db.query(User).filter(
-        and_(User.group_id == group_id, User.session_token == hash_token(session_token))
-    ).first()
-    
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid session token")
+    # Verify user via JWT
+    user = _get_user_from_request(request, db)
+    if not user or user.group_id != group_id:
+        raise HTTPException(status_code=401, detail="Invalid authentication")
     
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     
     # Check if user is group creator
-    if group.created_by != user.email:
+    if group.creator_id != user.id:
         raise HTTPException(status_code=403, detail="Only group creator can view their sets")
     
     # Get custom sets
@@ -3349,20 +3683,17 @@ async def list_group_creator_sets(
 async def get_question_set_details(
     group_id: int,
     set_id: int,
-    session_token: str = Header(None),
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """
     Get details of a question set including all templates.
     Only group creator can view their private sets.
     """
-    # Verify user and get session
-    user = db.query(User).filter(
-        and_(User.group_id == group_id, User.session_token == hash_token(session_token))
-    ).first()
-    
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid session token")
+    # Verify user via JWT
+    user = _get_user_from_request(request, db)
+    if not user or user.group_id != group_id:
+        raise HTTPException(status_code=401, detail="Invalid authentication")
     
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
@@ -3383,7 +3714,7 @@ async def get_question_set_details(
             raise HTTPException(status_code=403, detail="Access denied to this question set")
         
         # Check if user is group creator
-        if group.created_by != user.email:
+        if group.creator_id != user.id:
             raise HTTPException(status_code=403, detail="Only group creator can view private sets")
     
     # Get templates
@@ -3416,28 +3747,25 @@ async def get_question_set_details(
 async def update_private_question_set(
     group_id: int,
     set_id: int,
-    request: dict,
-    session_token: str = Header(None),
+    body: dict,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """
     Update a private question set (name and/or questions).
     Only group creator can update their sets.
     """
-    # Verify user and get session
-    user = db.query(User).filter(
-        and_(User.group_id == group_id, User.session_token == hash_token(session_token))
-    ).first()
-    
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid session token")
+    # Verify user via JWT
+    user = _get_user_from_request(request, db)
+    if not user or user.group_id != group_id:
+        raise HTTPException(status_code=401, detail="Invalid authentication")
     
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     
     # Check if user is group creator
-    if group.created_by != user.email:
+    if group.creator_id != user.id:
         raise HTTPException(status_code=403, detail="Only group creator can update private sets")
     
     # Verify this is a private set from this group
@@ -3453,8 +3781,8 @@ async def update_private_question_set(
         raise HTTPException(status_code=404, detail="Question set not found")
     
     # Update name if provided
-    if "name" in request:
-        name = request["name"].strip()
+    if "name" in body:
+        name = body["name"].strip()
         if not name or len(name) < 3:
             raise HTTPException(status_code=400, detail="Set name must be at least 3 characters")
         if len(name) > 200:
@@ -3462,8 +3790,8 @@ async def update_private_question_set(
         question_set.name = name
     
     # Update questions if provided
-    if "questions" in request:
-        questions = request["questions"]
+    if "questions" in body:
+        questions = body["questions"]
         if not questions:
             raise HTTPException(status_code=400, detail="At least one question is required")
         if len(questions) > 100:
@@ -3508,7 +3836,7 @@ async def update_private_question_set(
 async def delete_private_question_set(
     group_id: int,
     set_id: int,
-    session_token: str = Header(None),
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """
@@ -3516,20 +3844,17 @@ async def delete_private_question_set(
     Only group creator can delete their sets.
     Cannot delete sets that are currently assigned to the group.
     """
-    # Verify user and get session
-    user = db.query(User).filter(
-        and_(User.group_id == group_id, User.session_token == hash_token(session_token))
-    ).first()
-    
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid session token")
+    # Verify user via JWT
+    user = _get_user_from_request(request, db)
+    if not user or user.group_id != group_id:
+        raise HTTPException(status_code=401, detail="Invalid authentication")
     
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     
     # Check if user is group creator
-    if group.created_by != user.email:
+    if group.creator_id != user.id:
         raise HTTPException(status_code=403, detail="Only group creator can delete private sets")
     
     # Verify this is a private set from this group
@@ -3571,27 +3896,24 @@ async def delete_private_question_set(
 async def get_question_set_usage(
     group_id: int,
     set_id: int,
-    session_token: str = Header(None),
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """
     Get usage statistics for a private question set.
     Shows how many times each question has been asked.
     """
-    # Verify user and get session
-    user = db.query(User).filter(
-        and_(User.group_id == group_id, User.session_token == hash_token(session_token))
-    ).first()
-    
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid session token")
+    # Verify user via JWT
+    user = _get_user_from_request(request, db)
+    if not user or user.group_id != group_id:
+        raise HTTPException(status_code=401, detail="Invalid authentication")
     
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     
     # Check if user is group creator
-    if group.created_by != user.email:
+    if group.creator_id != user.id:
         raise HTTPException(status_code=403, detail="Only group creator can view usage stats")
     
     # Verify this is a private set from this group
@@ -3759,11 +4081,20 @@ async def admin_create_user(
     x_forwarded_for: str = Header(None),
     request_obj: Request = None
 ):
-    """Create a new user in a group (admin only)"""
+    """
+    Create a new user membership in a group (admin only).
+    
+    If an account_email is provided, the membership is linked to the existing account.
+    Otherwise, an unlinked membership is created (the user can link their account later).
+    
+    Required fields: display_name, group_id
+    Optional fields: color_avatar, account_email
+    """
     try:
         display_name = request_data.get("display_name", "").strip()
         group_id = request_data.get("group_id")
         color_avatar = request_data.get("color_avatar", None)
+        account_email = request_data.get("account_email", "").strip().lower() if request_data.get("account_email") else None
         
         if not display_name or len(display_name) < 2:
             raise ValueError("Display name must be at least 2 characters")
@@ -3782,18 +4113,27 @@ async def admin_create_user(
         if existing_user:
             raise ValueError("Display name already taken in this group")
         
-        # Generate session token
-        session_token_plaintext = generate_session_token()
-        session_token_hash = _hash_and_store_token(session_token_plaintext)
-        session_expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_TOKEN_EXPIRY_DAYS)
         avatar_color = color_avatar or get_random_avatar_color()
+        
+        # Link to account if email provided
+        account_id = None
+        if account_email:
+            account = db.query(Account).filter(func.lower(Account.email) == account_email).first()
+            if not account:
+                raise ValueError(f"No account found with email: {account_email}")
+            # Check if already a member
+            existing_membership = db.query(User).filter(
+                and_(User.account_id == account.id, User.group_id == group_id)
+            ).first()
+            if existing_membership:
+                raise ValueError("This account is already a member of this group")
+            account_id = account.id
         
         user = User(
             group_id=group_id,
             display_name=display_name,
-            session_token=session_token_hash,
-            session_token_expires_at=session_expires_at,
-            color_avatar=avatar_color
+            account_id=account_id,
+            color_avatar=avatar_color,
         )
         db.add(user)
         db.commit()
@@ -3806,7 +4146,7 @@ async def admin_create_user(
             target_type="USER",
             target_id=user.id,
             before_state=None,
-            after_state={"display_name": display_name, "group_id": group_id},
+            after_state={"display_name": display_name, "group_id": group_id, "account_email": account_email},
             ip_address=ip_address,
             reason=None,
             db=db
@@ -3814,10 +4154,11 @@ async def admin_create_user(
         
         return {
             "id": user.id,
+            "user_id": user.user_id,
             "display_name": user.display_name,
             "group_id": user.group_id,
-            "session_token": session_token_plaintext,
-            "color_avatar": user.color_avatar
+            "color_avatar": user.color_avatar,
+            "account_email": account_email,
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

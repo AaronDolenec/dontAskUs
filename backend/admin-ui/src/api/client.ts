@@ -82,14 +82,14 @@ export const api = {
     }).then(r => r.json())
   },
 
-  async recoverUserToken(accessToken: string, userId: number, reason: string) {
-    return fetch(`/api/admin/users/${userId}/recover-token`, {
+  async resetUserPassword(accessToken: string, userId: number, newPassword: string, reason: string) {
+    return fetch(`/api/admin/users/${userId}/reset-password`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ reason }),
+      body: JSON.stringify({ new_password: newPassword, reason }),
     }).then(r => r.json())
   },
 

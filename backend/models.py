@@ -26,6 +26,44 @@ def generate_totp_secret() -> str:
 def verify_totp(token: str, secret: str) -> bool:
     totp = pyotp.TOTP(secret)
     return totp.verify(token, valid_window=1)
+
+
+class Account(Base):
+    """
+    Account represents a unique user identity across the entire platform.
+    One account can be a member of many groups (via User records).
+    Authentication is done via email + password; sessions use JWT tokens.
+    """
+    __tablename__ = "accounts"
+    __table_args__ = (
+        Index('idx_accounts_email', 'email', unique=True),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_id = Column(String(36), unique=True, default=lambda: str(uuid.uuid4()))
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    display_name = Column(String(50), nullable=False)  # Default display name
+    is_active = Column(Boolean, default=True)
+    is_verified = Column(Boolean, default=False)  # For future email verification
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    last_login = Column(DateTime, nullable=True)
+    last_login_ip = Column(INET, nullable=True)
+    login_attempt_count = Column(Integer, default=0)
+    last_login_attempt = Column(DateTime, nullable=True)
+    is_locked_until = Column(DateTime, nullable=True)
+
+    # Relationships
+    memberships = relationship("User", back_populates="account", cascade="all, delete-orphan")
+
+    def set_password(self, password: str):
+        self.password_hash = hash_password(password)
+
+    def check_password(self, password: str) -> bool:
+        return verify_password(password, self.password_hash)
+
+
 class AdminUser(Base):
     __tablename__ = "admin_users"
     id = Column(Integer, primary_key=True, index=True)
@@ -108,19 +146,28 @@ class GroupAnalytics(Base):
     group = relationship("Group", back_populates="analytics")
 
 class User(Base):
+    """
+    User represents a group membership. Each Account has one User record per group.
+    The session_token fields are kept for legacy/migration compatibility but new auth
+    uses JWT tokens issued against the Account.
+    """
     __tablename__ = "users"
     __table_args__ = (
         UniqueConstraint('group_id', 'session_token', name='uq_group_session'),
         UniqueConstraint('group_id', 'display_name', name='uq_group_display_name'),
+        # Note: uq_account_group is a partial unique index (WHERE account_id IS NOT NULL)
+        # created in migration 007, not as a table-level constraint
         Index('idx_user_session', 'session_token'),
+        Index('idx_user_account', 'account_id'),
     )
     
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String(36), unique=True, default=lambda: str(uuid.uuid4()))
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)  # Nullable during migration
     group_id = Column(Integer, ForeignKey("groups.id"))
     display_name = Column(String(50))
-    session_token = Column(String(255), unique=True)  # Hashed token
-    session_token_expires_at = Column(DateTime, nullable=True)  # Token expiry
+    session_token = Column(String(255), unique=True, nullable=True)  # Legacy: hashed token
+    session_token_expires_at = Column(DateTime, nullable=True)  # Legacy: token expiry
     color_avatar = Column(String(7), default="#3498db")
     avatar_filename = Column(String(255), nullable=True)  # Uploaded avatar filename (e.g., "abc123.webp")
     avatar_uploaded_at = Column(DateTime, nullable=True)  # When avatar was uploaded
@@ -135,6 +182,7 @@ class User(Base):
     user_metadata = Column(JSONB, nullable=True, default={})
     
     group = relationship("Group", back_populates="members", foreign_keys=[group_id])
+    account = relationship("Account", back_populates="memberships", foreign_keys=[account_id])
     votes = relationship("Vote", back_populates="user", cascade="all, delete-orphan")
     group_streaks = relationship("UserGroupStreak", back_populates="user", cascade="all, delete-orphan")
 

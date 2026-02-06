@@ -65,15 +65,16 @@ Follow the prompts to create your admin account.
 
 ### Environment Variables
 
-| Variable                    | Description                            | Default                 |
-| --------------------------- | -------------------------------------- | ----------------------- |
-| `DATABASE_URL`              | PostgreSQL connection string           | Required                |
-| `REDIS_URL`                 | Redis connection string                | `redis://redis:6379`    |
-| `SECRET_KEY`                | JWT signing secret for user sessions   | Required                |
-| `ADMIN_JWT_SECRET`          | JWT signing secret for admin sessions  | Required                |
-| `ALLOWED_ORIGINS`           | CORS allowed origins (comma-separated) | `http://localhost:5173` |
-| `LOG_LEVEL`                 | Logging level                          | `INFO`                  |
-| `SESSION_TOKEN_EXPIRY_DAYS` | User session token expiry              | `7`                     |
+| Variable                         | Description                            | Default                 |
+| -------------------------------- | -------------------------------------- | ----------------------- |
+| `DATABASE_URL`                   | PostgreSQL connection string           | Required                |
+| `REDIS_URL`                      | Redis connection string                | `redis://redis:6379`    |
+| `SECRET_KEY`                     | JWT signing secret for user sessions   | Required                |
+| `ADMIN_JWT_SECRET`               | JWT signing secret for admin sessions  | Required                |
+| `ALLOWED_ORIGINS`                | CORS allowed origins (comma-separated) | `http://localhost:5173` |
+| `LOG_LEVEL`                      | Logging level                          | `INFO`                  |
+| `USER_JWT_ACCESS_EXPIRE_MINUTES` | User access token expiry (mins)        | `30`                    |
+| `USER_JWT_REFRESH_EXPIRE_DAYS`   | User refresh token expiry (days)       | `30`                    |
 
 ### Production Deployment
 
@@ -103,17 +104,18 @@ services:
 
 ## Configuration Reference
 
-| Variable                    | Description                            | Required              |
-| --------------------------- | -------------------------------------- | --------------------- |
-| `DATABASE_URL`              | PostgreSQL connection string           | Yes                   |
-| `REDIS_URL`                 | Redis connection string                | Yes                   |
-| `SECRET_KEY`                | JWT signing secret for user sessions   | Yes                   |
-| `ADMIN_JWT_SECRET`          | JWT signing secret for admin sessions  | Yes                   |
-| `ADMIN_INITIAL_USERNAME`    | Initial admin username                 | No (default: `admin`) |
-| `ADMIN_INITIAL_PASSWORD`    | Initial admin password                 | Yes                   |
-| `ALLOWED_ORIGINS`           | CORS allowed origins (comma-separated) | Yes                   |
-| `LOG_LEVEL`                 | Logging level                          | No (default: `INFO`)  |
-| `SESSION_TOKEN_EXPIRY_DAYS` | User session token expiry              | No (default: `7`)     |
+| Variable                         | Description                            | Required              |
+| -------------------------------- | -------------------------------------- | --------------------- |
+| `DATABASE_URL`                   | PostgreSQL connection string           | Yes                   |
+| `REDIS_URL`                      | Redis connection string                | Yes                   |
+| `SECRET_KEY`                     | JWT signing secret for user sessions   | Yes                   |
+| `ADMIN_JWT_SECRET`               | JWT signing secret for admin sessions  | Yes                   |
+| `ADMIN_INITIAL_USERNAME`         | Initial admin username                 | No (default: `admin`) |
+| `ADMIN_INITIAL_PASSWORD`         | Initial admin password                 | Yes                   |
+| `ALLOWED_ORIGINS`                | CORS allowed origins (comma-separated) | Yes                   |
+| `LOG_LEVEL`                      | Logging level                          | No (default: `INFO`)  |
+| `USER_JWT_ACCESS_EXPIRE_MINUTES` | User access token expiry (mins)        | No (default: `30`)    |
+| `USER_JWT_REFRESH_EXPIRE_DAYS`   | User refresh token expiry (days)       | No (default: `30`)    |
 
 ---
 

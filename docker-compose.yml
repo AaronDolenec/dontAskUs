@@ -67,7 +67,6 @@ services:
 
       # Optional settings
       LOG_LEVEL: INFO
-      SESSION_TOKEN_EXPIRY_DAYS: 7
 
       # ═══════════════════════════════════════════════════════════════════════
       # PUSH NOTIFICATIONS (Optional) - Firebase Cloud Messaging

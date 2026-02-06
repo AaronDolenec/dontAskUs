@@ -1,5 +1,5 @@
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, EmailStr
 from typing import Optional, List, Union
 from datetime import datetime
 from enum import Enum
@@ -21,6 +21,142 @@ class Admin2FARequest(BaseModel):
 class Admin2FAResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+# ============= User Auth Schemas =============
+
+class AuthRegisterRequest(BaseModel):
+    """Registration request with email, password, and display name."""
+    email: EmailStr = Field(..., description="Unique email address")
+    password: str = Field(..., min_length=8, max_length=128, description="Password (min 8 chars)")
+    display_name: str = Field(..., min_length=1, max_length=50, description="Default display name")
+
+    @field_validator('password')
+    @classmethod
+    def validate_password(cls, v):
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'[0-9]', v):
+            raise ValueError('Password must contain at least one digit')
+        return v
+
+    @field_validator('display_name')
+    @classmethod
+    def validate_display_name(cls, v):
+        v = sanitize_string(v, 50)
+        if not v or not v.strip():
+            raise ValueError('Display name cannot be empty')
+        return v
+
+
+class AuthLoginRequest(BaseModel):
+    """Login request with email and password."""
+    email: EmailStr
+    password: str
+
+
+class AuthTokenResponse(BaseModel):
+    """Response after successful login/register with JWT tokens."""
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int = Field(..., description="Access token expiry in seconds")
+    account_id: str
+    display_name: str
+    email: str
+
+
+class AuthRefreshRequest(BaseModel):
+    """Request to refresh an access token."""
+    refresh_token: str
+
+
+class AccountResponse(BaseModel):
+    """Full account info returned for /me endpoint."""
+    account_id: str
+    email: str
+    display_name: str
+    is_active: bool
+    is_verified: bool
+    created_at: datetime
+    last_login: Optional[datetime] = None
+
+
+class AccountGroupMembership(BaseModel):
+    """Represents one group membership for an account."""
+    user_id: str  # The per-group user_id
+    group_id: str  # The group's group_id (UUID)
+    group_name: str
+    display_name: str  # Per-group display name
+    color_avatar: str
+    avatar_url: Optional[str] = None
+    answer_streak: int = 0
+    longest_answer_streak: int = 0
+    joined_at: datetime
+
+
+class AccountMeResponse(BaseModel):
+    """Full /me response with account info and group memberships."""
+    account: AccountResponse
+    groups: List[AccountGroupMembership]
+
+
+class UserChangePasswordRequest(BaseModel):
+    """Request to change account password."""
+    current_password: str
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_new_password(cls, v):
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'[0-9]', v):
+            raise ValueError('Password must contain at least one digit')
+        return v
+
+
+class JoinGroupRequest(BaseModel):
+    """Request to join a group (authenticated user)."""
+    invite_code: str = Field(..., min_length=1, max_length=10)
+    display_name: Optional[str] = Field(None, min_length=1, max_length=50, description="Per-group display name (defaults to account display name)")
+    color_avatar: Optional[str] = Field(None, description="Optional hex color like #AABBCC")
+
+    @field_validator('invite_code')
+    @classmethod
+    def validate_invite_code(cls, v):
+        v = v.strip().upper()
+        if not re.match(r'^[A-Z0-9]{6,8}$', v):
+            raise ValueError('Invalid invite code format')
+        return v
+
+    @field_validator('display_name')
+    @classmethod
+    def validate_display_name(cls, v):
+        if v is None:
+            return v
+        v = sanitize_string(v, 50)
+        if not v or not v.strip():
+            raise ValueError('Display name cannot be empty')
+        return v
+
+    @field_validator('color_avatar')
+    @classmethod
+    def validate_color(cls, v):
+        if v is None:
+            return v
+        v = v.strip()
+        if not re.match(r'^#([A-Fa-f0-9]{6})$', v):
+            raise ValueError('color_avatar must be a hex color like #AABBCC')
+        return v
 
 
 def sanitize_string(value: str, max_length: int = 1000) -> str:
@@ -76,41 +212,7 @@ class GroupResponsePublic(BaseModel):
 
 # ============= User Schemas =============
 
-class UserCreate(BaseModel):
-    display_name: str = Field(..., min_length=1, max_length=50)
-    group_invite_code: str = Field(..., min_length=1, max_length=10)
-    color_avatar: Optional[str] = Field(
-        default=None,
-        description="Optional hex color like #AABBCC"
-    )
-    
-    @field_validator('display_name')
-    @classmethod
-    def validate_display_name(cls, v):
-        v = sanitize_string(v, 50)
-        if not v or not v.strip():
-            raise ValueError('Display name cannot be empty')
-        if len(v) < 1:
-            raise ValueError('Display name too short')
-        return v
-    
-    @field_validator('group_invite_code')
-    @classmethod
-    def validate_invite_code(cls, v):
-        v = v.strip().upper()
-        if not re.match(r'^[A-Z0-9]{6,8}$', v):
-            raise ValueError('Invalid invite code format')
-        return v
-
-    @field_validator('color_avatar')
-    @classmethod
-    def validate_color(cls, v):
-        if v is None:
-            return v
-        v = v.strip()
-        if not re.match(r'^#([A-Fa-f0-9]{6})$', v):
-            raise ValueError('color_avatar must be a hex color like #AABBCC')
-        return v
+# UserCreate removed — use /api/auth/register + /api/auth/groups/join instead
 
 class UserResponse(BaseModel):
     id: int
@@ -119,7 +221,6 @@ class UserResponse(BaseModel):
     display_name: str
     color_avatar: str
     avatar_url: Optional[str] = None
-    session_token: str
     created_at: datetime
     answer_streak: int = 0
     longest_answer_streak: int = 0

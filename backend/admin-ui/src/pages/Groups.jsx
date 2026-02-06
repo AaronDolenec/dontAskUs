@@ -89,7 +89,7 @@ export default function Groups() {
       </div>
 
       {showNewForm && (
-        <div style={{ marginBottom: 16, padding: 12, border: '1px solid #ccc', borderRadius: 4 }}>
+        <div style={{ marginBottom: 16, padding: 12, border: '1px solid var(--border-color)', borderRadius: 4, backgroundColor: 'var(--bg-primary)' }}>
           <input
             type="text"
             placeholder="Group name"

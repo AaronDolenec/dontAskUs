@@ -209,27 +209,29 @@ class UserSuspensionRequest(BaseModel):
         }
 
 
-class TokenRecoveryRequest(BaseModel):
-    """Request to recover/regenerate a user's session token"""
-    reason: str = Field(..., max_length=500, description="Reason for token recovery")
+class AccountPasswordResetRequest(BaseModel):
+    """Request for admin to reset a user account's password"""
+    new_password: str = Field(..., min_length=8, max_length=128, description="New password for the account")
+    reason: str = Field(..., max_length=500, description="Reason for password reset")
     
     class Config:
         json_schema_extra = {
             "example": {
+                "new_password": "NewSecure1Pass",
                 "reason": "User lost access to their account"
             }
         }
 
 
-class TokenRecoveryResponse(BaseModel):
-    """Response with recovered/regenerated session token"""
-    session_token: str
+class AccountPasswordResetResponse(BaseModel):
+    """Response after admin resets a user account's password"""
     message: str
+    account_email: str
     
     class Config:
         json_schema_extra = {
             "example": {
-                "session_token": "sha256_hashed_token",
-                "message": "New session token generated"
+                "message": "Password reset for user@example.com",
+                "account_email": "user@example.com"
             }
         }

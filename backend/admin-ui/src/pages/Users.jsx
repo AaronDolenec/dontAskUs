@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../lib/api'
+import '../styles/Management.css'
 
 export default function Users() {
   const [users, setUsers] = useState([])
@@ -9,6 +10,7 @@ export default function Users() {
   const [showNewForm, setShowNewForm] = useState(false)
   const [newUserName, setNewUserName] = useState('')
   const [newUserGroupId, setNewUserGroupId] = useState('')
+  const [newUserEmail, setNewUserEmail] = useState('')
 
   async function load() {
     setLoading(true)
@@ -42,24 +44,30 @@ export default function Users() {
     if (res.ok) load()
   }
 
-  async function recoverToken(u) {
-    const reason = prompt('Reason for token recovery:')
+  async function resetPassword(u) {
+    const newPassword = prompt(`Enter new password for ${u.display_name} (${u.account_email || 'no account'}):\n\nRequirements: min 8 chars, uppercase, lowercase, digit`)
+    if (!newPassword) return
+    if (newPassword.length < 8) {
+      alert('Password must be at least 8 characters')
+      return
+    }
+    const reason = prompt('Reason for password reset:')
     if (!reason) return
     try {
-      const res = await api(`/api/admin/users/${u.id}/recover-token`, {
+      const res = await api(`/api/admin/users/${u.id}/reset-password`, {
         method: 'POST',
-        body: JSON.stringify({ reason })
+        body: JSON.stringify({ new_password: newPassword, reason })
       })
       if (res.ok) {
         const data = await res.json()
-        alert(`New session token for ${u.display_name}:\n\n${data.session_token}\n\nSave this token - it won't be shown again!`)
+        alert(`Password reset successfully for ${data.account_email}`)
       } else {
         const errData = await res.json()
-        console.error('Error recovering token:', errData)
-        alert('Error: ' + (errData.detail || 'Failed to recover token'))
+        console.error('Error resetting password:', errData)
+        alert('Error: ' + (errData.detail || 'Failed to reset password'))
       }
     } catch (err) {
-      console.error('Exception recovering token:', err)
+      console.error('Exception resetting password:', err)
       alert('Error: ' + err.message)
     }
   }
@@ -92,19 +100,24 @@ export default function Users() {
       return
     }
     try {
+      const body = { 
+        display_name: newUserName,
+        group_id: parseInt(newUserGroupId)
+      }
+      if (newUserEmail.trim()) {
+        body.account_email = newUserEmail.trim()
+      }
       const res = await api('/api/admin/users', {
         method: 'POST',
-        body: JSON.stringify({ 
-          display_name: newUserName,
-          group_id: parseInt(newUserGroupId)
-        })
+        body: JSON.stringify(body)
       })
       if (res.ok) {
         const data = await res.json()
         console.log('Created user:', data)
-        alert(`User created! Session token: ${data.session_token}\n\nSave this token - it won't be shown again.`)
+        alert(`User created!${data.account_email ? ` Linked to account: ${data.account_email}` : ' No account linked.'}`)
         setNewUserName('')
         setNewUserGroupId('')
+        setNewUserEmail('')
         setShowNewForm(false)
         await load()
       } else {
@@ -130,12 +143,19 @@ export default function Users() {
       </div>
 
       {showNewForm && (
-        <div style={{ marginBottom: 16, padding: 12, border: '1px solid #ccc', borderRadius: 4 }}>
+        <div style={{ marginBottom: 16, padding: 12, border: '1px solid var(--border-color)', borderRadius: 4, backgroundColor: 'var(--bg-primary)' }}>
           <input
             type="text"
             placeholder="Display name"
             value={newUserName}
             onChange={e => setNewUserName(e.target.value)}
+            style={{ marginRight: 8, padding: 6 }}
+          />
+          <input
+            type="email"
+            placeholder="Account email (optional)"
+            value={newUserEmail}
+            onChange={e => setNewUserEmail(e.target.value)}
             style={{ marginRight: 8, padding: 6 }}
           />
           <select
@@ -152,18 +172,18 @@ export default function Users() {
         </div>
       )}
       <div style={{ overflowX: 'auto' }}>
-        <table border="1" cellPadding="6" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+        <table className="management-table">
           <thead>
             <tr>
               <th>ID</th>
               <th>User ID</th>
               <th>Display Name</th>
               <th>Group</th>
+              <th>Account Email</th>
               <th>Avatar</th>
               <th>Streak</th>
               <th>Best Streak</th>
               <th>Last Answer</th>
-              <th>Token Expires</th>
               <th>Suspended</th>
               <th>Last IP</th>
               <th>Created</th>
@@ -177,6 +197,7 @@ export default function Users() {
                 <td style={{ fontSize: '10px' }}>{u.user_id}</td>
                 <td>{u.display_name}</td>
                 <td>{u.group_name || `Group ${u.group_id}`}</td>
+                <td style={{ fontSize: '11px' }}>{u.account_email || <span style={{ color: 'var(--text-secondary)' }}>No account</span>}</td>
                 <td>
                   <div style={{ 
                     width: 20, 
@@ -189,7 +210,6 @@ export default function Users() {
                 <td>{u.answer_streak}</td>
                 <td>{u.longest_answer_streak}</td>
                 <td>{u.last_answer_date ? new Date(u.last_answer_date).toLocaleDateString() : 'Never'}</td>
-                <td>{u.session_token_expires_at ? new Date(u.session_token_expires_at).toLocaleDateString() : 'N/A'}</td>
                 <td style={{ color: u.is_suspended ? 'red' : 'green' }}>
                   {u.is_suspended ? 'Yes' : 'No'}
                 </td>
@@ -199,7 +219,9 @@ export default function Users() {
                   <button onClick={() => toggleSuspend(u)} style={{ marginRight: 4, padding: '4px 8px' }}>
                     {u.is_suspended ? 'Unsuspend' : 'Suspend'}
                   </button>
-                  <button onClick={() => recoverToken(u)} style={{ marginRight: 4, padding: '4px 8px' }}>Token</button>
+                  {u.account_email && (
+                    <button onClick={() => resetPassword(u)} style={{ marginRight: 4, padding: '4px 8px' }}>Reset PW</button>
+                  )}
                   <button onClick={() => deleteUser(u)} style={{ color: 'red', padding: '4px 8px' }}>Delete</button>
                 </td>
               </tr>

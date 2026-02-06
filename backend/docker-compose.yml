@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   db:
     image: postgres:15
@@ -46,7 +44,6 @@ services:
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
       SCHEDULE_INTERVAL_SECONDS: "${SCHEDULE_INTERVAL_SECONDS:-86400}"
       SECRET_KEY: "${SECRET_KEY:-your-super-secret-key-change-in-production}"
-      SESSION_TOKEN_EXPIRY_DAYS: "${SESSION_TOKEN_EXPIRY_DAYS:-7}"
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000}"
       ADMIN_INITIAL_USERNAME: "${ADMIN_INITIAL_USERNAME:-admin}"
       ADMIN_INITIAL_PASSWORD: "${ADMIN_INITIAL_PASSWORD:-changeme123}"
