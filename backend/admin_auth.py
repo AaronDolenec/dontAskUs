@@ -1,63 +1,37 @@
 """
-Admin authentication system with 2FA (TOTP) support
-Handles instance admin login, token generation, and session management
+Admin authentication system with 2FA (TOTP) support.
+Handles instance admin login, token generation, and session management.
 """
 
-import os
-import pyotp
-import jwt
-import bcrypt
 import ipaddress
+
+import jwt
+import pyotp
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer
-from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
-from database import SessionLocal
+from config import (
+    ADMIN_AUTH_SECRET_KEY as SECRET_KEY,
+    ADMIN_AUTH_JWT_EXPIRY_MINUTES as ADMIN_JWT_EXPIRY_MINUTES,
+    ADMIN_AUTH_REFRESH_EXPIRY_DAYS as ADMIN_REFRESH_EXPIRY_DAYS,
+    ADMIN_LOGIN_ATTEMPT_LIMIT as LOGIN_ATTEMPT_LIMIT,
+    ADMIN_LOGIN_ATTEMPT_WINDOW_MINUTES as LOGIN_ATTEMPT_WINDOW_MINUTES,
+    ADMIN_LOCKOUT_DURATION_MINUTES as LOCKOUT_DURATION_MINUTES,
+)
+from database import get_db
 from models import AdminUser, AuditLog
-
-# Security configuration
-SECRET_KEY = os.getenv("SECRET_KEY", "your-super-secret-key-change-in-production")
-ADMIN_JWT_EXPIRY_MINUTES = 60
-ADMIN_REFRESH_EXPIRY_DAYS = 7
-LOGIN_ATTEMPT_LIMIT = 5
-LOGIN_ATTEMPT_WINDOW_MINUTES = 15
-LOCKOUT_DURATION_MINUTES = 30
+from utils import hash_password, verify_password
 
 # Bearer token scheme
 security = HTTPBearer()
 
 
 class AdminAuthError(Exception):
-    """Custom exception for admin auth errors"""
+    """Custom exception for admin auth errors."""
     pass
-
-
-class AdminLoginRequest:
-    """Request model for admin login"""
-    def __init__(self, username: str, password: str):
-        self.username = username
-        self.password = password
-
-
-class AdminTOTPRequest:
-    """Request model for TOTP verification"""
-    def __init__(self, temp_token: str, totp_code: str):
-        self.temp_token = temp_token
-        self.totp_code = totp_code
-
-
-def hash_password(password: str) -> str:
-    """Hash a password using bcrypt"""
-    salt = bcrypt.gensalt(rounds=12)
-    return bcrypt.hashpw(password.encode(), salt).decode()
-
-
-def verify_password(password: str, hashed: str) -> bool:
-    """Verify a password against its hash"""
-    return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
 def generate_temp_token(admin_id: int) -> str:
@@ -210,15 +184,6 @@ def log_admin_action(
     return audit_log
 
 
-def get_db():
-    """Get database session"""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
 def get_current_admin(credentials = Depends(security), db: Session = Depends(get_db)) -> AdminUser:
     """Dependency to get current authenticated admin from JWT token"""
     token = credentials.credentials
@@ -237,6 +202,12 @@ def get_current_admin(credentials = Depends(security), db: Session = Depends(get
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Admin user not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not admin.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin account is deactivated",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
@@ -259,8 +230,17 @@ def get_admin_from_refresh_token(token: str, db: Session) -> AdminUser:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Admin user not found",
         )
+    if not admin.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin account is deactivated",
+        )
     
     return admin
+
+
+# Dummy hash for timing-safe comparison when username is not found
+_DUMMY_HASH = hash_password("dummy-password-for-timing-safety")
 
 
 def authenticate_admin(username: str, password: str, ip_address: str, db: Session) -> AdminUser:
@@ -268,10 +248,17 @@ def authenticate_admin(username: str, password: str, ip_address: str, db: Sessio
     admin = db.query(AdminUser).filter(AdminUser.username == username).first()
     
     if not admin:
+        # Perform a dummy password check to prevent timing-based username enumeration
+        verify_password(password, _DUMMY_HASH)
         raise AdminAuthError("Invalid username or password")
     
     # Check if account is locked
     check_login_attempts(admin)
+    
+    # Check if account is active
+    if not admin.is_active:
+        verify_password(password, _DUMMY_HASH)  # Timing safety
+        raise AdminAuthError("Invalid username or password")
     
     # Verify password
     if not verify_password(password, admin.password_hash):

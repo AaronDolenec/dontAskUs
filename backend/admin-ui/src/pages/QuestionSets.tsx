@@ -1,12 +1,29 @@
-import React, { useEffect, useState } from 'react'
-import { api } from '../lib/api'
+import { Fragment, useEffect, useState } from 'react'
+import { useApi } from '../api/client'
 import '../styles/Management.css'
 
+interface QuestionSetRow {
+  id: number
+  name: string
+  question_count: number
+  is_public: boolean
+  usage_count: number
+}
+
+interface QuestionRow {
+  id: number
+  text?: string
+  question_text?: string
+  type: string
+  options?: string[]
+}
+
 export default function QuestionSets() {
-  const [sets, setSets] = useState([])
+  const { request } = useApi()
+  const [sets, setSets] = useState<QuestionSetRow[]>([])
   const [total, setTotal] = useState(0)
-  const [expandedId, setExpandedId] = useState(null)
-  const [questions, setQuestions] = useState({})
+  const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [questions, setQuestions] = useState<Record<number, QuestionRow[]>>({})
   const [newQuestionText, setNewQuestionText] = useState('')
   const [newQuestionType, setNewQuestionType] = useState('member_choice')
   const [loading, setLoading] = useState(true)
@@ -17,41 +34,38 @@ export default function QuestionSets() {
   async function load() {
     setLoading(true)
     try {
-      const res = await api('/api/admin/question-sets?limit=50&offset=0')
+      const res = await request('/api/admin/question-sets?limit=50&offset=0')
       if (res.ok) {
         const data = await res.json()
         setSets(data.sets)
         setTotal(data.total)
       } else {
         const errData = await res.json()
-        console.error('Error loading question sets:', errData)
         alert('Error loading question sets: ' + (errData.detail || 'Unknown error'))
       }
-    } catch (err) {
-      console.error('Exception loading question sets:', err)
+    } catch (err: any) {
       alert('Error: ' + err.message)
     }
     setLoading(false)
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function loadQuestions(setId) {
+  async function loadQuestions(setId: number) {
     try {
-      const res = await api(`/api/admin/question-sets/${setId}/questions`)
+      const res = await request(`/api/admin/question-sets/${setId}/questions`)
       if (res.ok) {
         const data = await res.json()
-        console.log('Loaded questions:', data)
         setQuestions(prev => ({ ...prev, [setId]: data.questions || [] }))
-      } else {
-        console.error('Failed to load questions:', res.status, await res.text())
       }
     } catch (err) {
       console.error('Error loading questions:', err)
     }
   }
 
-  async function toggleExpanded(s) {
+  async function toggleExpanded(s: QuestionSetRow) {
     if (expandedId === s.id) {
       setExpandedId(null)
     } else {
@@ -66,84 +80,73 @@ export default function QuestionSets() {
       return
     }
     try {
-      const res = await api('/api/admin/question-sets', {
+      const res = await request('/api/admin/question-sets', {
         method: 'POST',
-        body: JSON.stringify({ name: newSetName, is_public: newSetPublic })
+        body: { name: newSetName, is_public: newSetPublic },
       })
       if (res.ok) {
-        const data = await res.json()
-        console.log('Created set:', data)
         setNewSetName('')
         setShowNewSetForm(false)
         await load()
       } else {
         const errData = await res.json()
-        console.error('Error creating set:', errData)
         alert('Error: ' + (errData.detail || 'Failed to create set'))
       }
-    } catch (err) {
-      console.error('Exception creating set:', err)
+    } catch (err: any) {
       alert('Error: ' + err.message)
     }
   }
 
-  async function deleteSet(setId) {
+  async function deleteSet(setId: number) {
     if (!confirm('Delete this question set? This cannot be undone.')) return
     try {
-      const res = await api(`/api/admin/question-sets/${setId}`, { method: 'DELETE' })
+      const res = await request(`/api/admin/question-sets/${setId}`, { method: 'DELETE' })
       if (res.ok) {
-        console.log('Set deleted successfully')
         await load()
       } else {
         const errData = await res.json()
-        console.error('Error deleting set:', errData)
         alert('Error: ' + (errData.detail || 'Failed to delete set'))
       }
-    } catch (err) {
-      console.error('Exception deleting set:', err)
+    } catch (err: any) {
       alert('Error: ' + err.message)
     }
   }
 
-  async function deleteQuestion(setId, questionId) {
+  async function deleteQuestion(setId: number, questionId: number) {
     if (!confirm('Delete this question?')) return
     try {
-      const res = await api(`/api/admin/question-sets/${setId}/questions/${questionId}`, { method: 'DELETE' })
+      const res = await request(`/api/admin/question-sets/${setId}/questions/${questionId}`, { method: 'DELETE' })
       if (res.ok) {
-        console.log('Question deleted successfully')
         await loadQuestions(setId)
       } else {
         const errData = await res.json()
-        console.error('Error deleting question:', errData)
         alert('Error: ' + (errData.detail || 'Failed to delete question'))
       }
-    } catch (err) {
-      console.error('Exception deleting question:', err)
+    } catch (err: any) {
       alert('Error: ' + err.message)
     }
   }
 
-  async function addQuestion(setId) {
+  async function addQuestion(setId: number) {
     if (!newQuestionText.trim()) {
       alert('Please enter a question')
       return
     }
-    const payload = {
-      question_text: newQuestionText,
-      question_type: newQuestionType,
-      options: []
-    }
-    const res = await api(`/api/admin/question-sets/${setId}/questions`, {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    })
-    if (res.ok) {
-      setNewQuestionText('')
-      setNewQuestionType('member_choice')
-      await loadQuestions(setId)
-    } else {
-      const errData = await res.json()
-      alert('Error adding question: ' + (errData.detail || 'Unknown error'))
+    try {
+      const res = await request(`/api/admin/question-sets/${setId}/questions`, {
+        method: 'POST',
+        body: { question_text: newQuestionText, question_type: newQuestionType, options: [] },
+      })
+      if (res.ok) {
+        setNewQuestionText('')
+        setNewQuestionType('member_choice')
+        await loadQuestions(setId)
+      } else {
+        const errData = await res.json()
+        alert('Error adding question: ' + (errData.detail || 'Unknown error'))
+      }
+    } catch (err: any) {
+      alert('Error: ' + err.message)
     }
   }
 
@@ -166,19 +169,9 @@ export default function QuestionSets() {
 
       {showNewSetForm && (
         <div style={{ marginBottom: 16, padding: 12, border: '1px solid var(--border-color)', borderRadius: 4, backgroundColor: 'var(--bg-primary)' }}>
-          <input
-            type="text"
-            placeholder="Set name"
-            value={newSetName}
-            onChange={e => setNewSetName(e.target.value)}
-            style={{ marginRight: 8, padding: 6 }}
-          />
+          <input type="text" placeholder="Set name" value={newSetName} onChange={e => setNewSetName(e.target.value)} style={{ marginRight: 8, padding: 6 }} />
           <label style={{ marginRight: 16 }}>
-            <input
-              type="checkbox"
-              checked={newSetPublic}
-              onChange={e => setNewSetPublic(e.target.checked)}
-            />
+            <input type="checkbox" checked={newSetPublic} onChange={e => setNewSetPublic(e.target.checked)} />
             Public
           </label>
           <button onClick={createSet} style={{ padding: '6px 12px' }}>Create</button>
@@ -193,7 +186,7 @@ export default function QuestionSets() {
         </thead>
         <tbody>
           {sets.map(s => (
-            <React.Fragment key={s.id}>
+            <Fragment key={s.id}>
               <tr>
                 <td>{s.id}</td>
                 <td>{s.name}</td>
@@ -209,23 +202,13 @@ export default function QuestionSets() {
               </tr>
               {expandedId === s.id && (
                 <tr className="expanded-row">
-                  <td colSpan="6" className="expanded-content">
+                  <td colSpan={6} className="expanded-content">
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                         <h4 style={{ margin: 0 }}>Questions in "{s.name}"</h4>
                         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                          <input
-                            type="text"
-                            placeholder="Enter question text"
-                            value={newQuestionText}
-                            onChange={e => setNewQuestionText(e.target.value)}
-                            style={{ padding: 6, minWidth: 240 }}
-                          />
-                          <select
-                            value={newQuestionType}
-                            onChange={e => setNewQuestionType(e.target.value)}
-                            style={{ padding: 6 }}
-                          >
+                          <input type="text" placeholder="Enter question text" value={newQuestionText} onChange={e => setNewQuestionText(e.target.value)} style={{ padding: 6, minWidth: 240 }} />
+                          <select value={newQuestionType} onChange={e => setNewQuestionType(e.target.value)} style={{ padding: 6 }}>
                             <option value="member_choice">Member Choice</option>
                             <option value="duo_choice">Duo Vote</option>
                             <option value="free_text">Free Text</option>
@@ -251,27 +234,16 @@ export default function QuestionSets() {
                                   </div>
                                   {q.options && q.options.length > 0 && (
                                     <div style={{ marginTop: 6, fontSize: '12px' }}>
-                                      Options: {q.options.map((opt, i) => (
-                                        <span key={i} style={{ 
-                                          display: 'inline-block',
-                                          backgroundColor: 'var(--chip-bg)', 
-                                          padding: '2px 6px', 
-                                          borderRadius: 3,
-                                          marginRight: 4,
-                                          marginTop: 2,
-                                          color: 'var(--text-primary)',
-                                          border: '1px solid var(--chip-border)'
-                                        }}>
+                                      Options:{' '}
+                                      {q.options.map((opt, i) => (
+                                        <span key={i} style={{ display: 'inline-block', backgroundColor: 'var(--chip-bg)', padding: '2px 6px', borderRadius: 3, marginRight: 4, marginTop: 2, color: 'var(--text-primary)', border: '1px solid var(--chip-border)' }}>
                                           {opt}
                                         </span>
                                       ))}
                                     </div>
                                   )}
                                 </div>
-                                <button 
-                                  onClick={() => deleteQuestion(s.id, q.id)} 
-                                  style={{ color: 'red', padding: '4px 8px', fontSize: 12, marginLeft: 12 }}
-                                >
+                                <button onClick={() => deleteQuestion(s.id, q.id)} style={{ color: 'red', padding: '4px 8px', fontSize: 12, marginLeft: 12 }}>
                                   Delete
                                 </button>
                               </div>
@@ -283,7 +255,7 @@ export default function QuestionSets() {
                   </td>
                 </tr>
               )}
-            </React.Fragment>
+            </Fragment>
           ))}
         </tbody>
       </table>

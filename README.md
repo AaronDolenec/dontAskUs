@@ -45,8 +45,8 @@ docker compose up -d
 
 ### 4. Access your instance
 
-- **Admin UI**: http://localhost:5173
-- **API Docs**: http://localhost:8000/docs
+- **Admin UI**: <http://localhost:5173>
+- **API Docs**: <http://localhost:8000/docs>
 
 Login with the `ADMIN_INITIAL_USERNAME` and `ADMIN_INITIAL_PASSWORD` you configured.
 
@@ -56,8 +56,8 @@ Follow the prompts to create your admin account.
 
 ### 6. Access the application
 
-- **API Docs**: http://localhost:8000/docs
-- **Admin UI**: http://localhost:5173
+- **API Docs**: <http://localhost:8000/docs>
+- **Admin UI**: <http://localhost:5173>
 
 ---
 

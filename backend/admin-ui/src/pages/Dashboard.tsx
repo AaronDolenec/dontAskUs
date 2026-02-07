@@ -1,16 +1,31 @@
-import React, { useEffect, useState } from 'react'
-import { api } from '../lib/api'
+import { useEffect, useState } from 'react'
+import { useApi } from '../api/client'
 import '../styles/Dashboard.css'
 
+interface DashboardStats {
+  total_groups: number
+  total_users: number
+  total_question_sets: number
+  public_sets: number
+  private_sets: number
+  active_sessions_today: number
+  recent_audit_logs: { id: number; action: string; timestamp: string; ip_address?: string; target_type?: string }[]
+}
+
 export default function Dashboard() {
-  const [stats, setStats] = useState(null)
+  const { request } = useApi()
+  const [stats, setStats] = useState<DashboardStats | null>(null)
 
   useEffect(() => {
-    (async () => {
-      const res = await api('/api/admin/dashboard/stats')
-      if (res.ok) setStats(await res.json())
+    ;(async () => {
+      try {
+        const res = await request('/api/admin/dashboard/stats')
+        if (res.ok) setStats(await res.json())
+      } catch (err) {
+        console.error('Failed to load dashboard:', err)
+      }
     })()
-  }, [])
+  }, [request])
 
   if (!stats) return <div className="dash-loading">Loading dashboard...</div>
 
@@ -20,7 +35,7 @@ export default function Dashboard() {
     { label: 'Question Sets', value: stats.total_question_sets },
     { label: 'Public Sets', value: stats.public_sets },
     { label: 'Private Sets', value: stats.private_sets },
-    { label: 'Active Sessions Today', value: stats.active_sessions_today }
+    { label: 'Active Sessions Today', value: stats.active_sessions_today },
   ]
 
   return (
@@ -51,7 +66,7 @@ export default function Dashboard() {
               <h3>Recent Audit Logs</h3>
             </div>
           </div>
-          {(!stats.recent_audit_logs || stats.recent_audit_logs.length === 0) ? (
+          {!stats.recent_audit_logs || stats.recent_audit_logs.length === 0 ? (
             <div className="empty">No audit entries yet.</div>
           ) : (
             <ul className="audit-list">

@@ -2,7 +2,7 @@
 Pydantic schemas for admin endpoints
 """
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -96,7 +96,21 @@ class AdminProfileResponse(BaseModel):
 class ChangePasswordRequest(BaseModel):
     """Request model to change admin password"""
     current_password: str = Field(..., min_length=8)
-    new_password: str = Field(..., min_length=8)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_new_password(cls, v):
+        import re
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'[0-9]', v):
+            raise ValueError('Password must contain at least one digit')
+        return v
 
 
 class TOTPSetupStartResponse(BaseModel):
@@ -213,6 +227,20 @@ class AccountPasswordResetRequest(BaseModel):
     """Request for admin to reset a user account's password"""
     new_password: str = Field(..., min_length=8, max_length=128, description="New password for the account")
     reason: str = Field(..., max_length=500, description="Reason for password reset")
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_new_password(cls, v):
+        import re
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'[0-9]', v):
+            raise ValueError('Password must contain at least one digit')
+        return v
     
     class Config:
         json_schema_extra = {

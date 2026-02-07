@@ -1,10 +1,9 @@
 import { useState, useEffect } from 'react'
-import { useAuth } from '../context/AuthContext'
-import { api } from '../api/client'
+import { useApi } from '../api/client'
 import '../styles/Management.css'
 
 export default function AuditLogs() {
-  const { accessToken } = useAuth()
+  const { request } = useApi()
   const [logs, setLogs] = useState<any[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(0)
@@ -13,14 +12,17 @@ export default function AuditLogs() {
   const pageSize = 50
 
   useEffect(() => {
-    if (!accessToken) return
-
     const fetchLogs = async () => {
       try {
-        const data = await api.auditLogs(accessToken, pageSize, page * pageSize)
-        setLogs(data.logs)
-        setTotal(data.total)
-        setError('')
+        const res = await request(`/api/admin/audit-logs?limit=${pageSize}&offset=${page * pageSize}`)
+        if (res.ok) {
+          const data = await res.json()
+          setLogs(data.logs)
+          setTotal(data.total)
+          setError('')
+        } else {
+          setError('Failed to load audit logs')
+        }
       } catch (err: any) {
         setError(err.message)
       } finally {
@@ -29,7 +31,7 @@ export default function AuditLogs() {
     }
 
     fetchLogs()
-  }, [accessToken, page])
+  }, [request, page])
 
   if (error) return <div className="error">Error: {error}</div>
 

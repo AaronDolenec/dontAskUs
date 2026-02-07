@@ -27,8 +27,6 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
         if (res.ok) {
           setIsValid(true)
         } else {
-          // Token invalid or expired - clear it
-          console.log('🔒 Token invalid, clearing session')
           await logout()
           setIsValid(false)
         }

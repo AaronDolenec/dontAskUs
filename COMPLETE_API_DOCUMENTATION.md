@@ -295,7 +295,7 @@ Content-Type: application/json
 
 ---
 
-### Create Group
+### Create Group (Auth)
 
 Create a new group and become its first member.
 
@@ -480,7 +480,7 @@ function getAvatarDisplay(user) {
 
 ## Group Endpoints
 
-### Create Group
+### Create Group (Legacy)
 
 ```http
 POST /api/groups
@@ -1065,7 +1065,7 @@ Content-Type: application/json
 
 ---
 
-### Refresh Token
+### Refresh Token (Admin)
 
 ```http
 POST /api/admin/refresh
@@ -1131,7 +1131,7 @@ Authorization: Bearer <access_token>
 
 ---
 
-### Change Password
+### Change Password (Admin)
 
 ```http
 POST /api/admin/account/change-password

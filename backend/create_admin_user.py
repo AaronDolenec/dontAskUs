@@ -1,4 +1,5 @@
-from models import AdminUser, hash_password
+from models import AdminUser
+from utils import hash_password
 from database import SessionLocal
 
 # Run this script once to create the initial admin user

@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { api } from '../api/client'
+import { useApi } from '../api/client'
 import QRCode from 'qrcode.react'
 import '../styles/Account.css'
 
 export default function Account() {
-  const { accessToken, logout } = useAuth()
+  const { logout } = useAuth()
+  const { request } = useApi()
   const [profile, setProfile] = useState<any>(null)
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -20,26 +21,23 @@ export default function Account() {
   const [totpSuccess, setTotpSuccess] = useState('')
   const [settingUpTotp, setSettingUpTotp] = useState(false)
 
-  useEffect(() => {
-    if (!accessToken) return
-
-    const fetchProfile = async () => {
-      try {
-        const data = await api.profile(accessToken)
-        setProfile(data)
-      } catch (err: any) {
-        console.error('Error fetching profile:', err)
-      } finally {
-        setLoading(false)
-      }
+  const fetchProfile = async () => {
+    try {
+      const res = await request('/api/admin/profile')
+      if (res.ok) setProfile(await res.json())
+    } catch (err: any) {
+      console.error('Error fetching profile:', err)
+    } finally {
+      setLoading(false)
     }
+  }
 
+  useEffect(() => {
     fetchProfile()
-  }, [accessToken])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault()
-    console.log('🔐 handleChangePassword called')
     setPasswordError('')
     setPasswordSuccess('')
 
@@ -54,31 +52,39 @@ export default function Account() {
     }
 
     try {
-      console.log('Calling api.changePassword...')
-      const response = await api.changePassword(accessToken!, currentPassword, newPassword)
-      console.log('✅ Password change response:', response)
-      setPasswordSuccess('Password changed successfully')
-      setCurrentPassword('')
-      setNewPassword('')
-      setConfirmPassword('')
+      const res = await request('/api/admin/account/change-password', {
+        method: 'POST',
+        body: { current_password: currentPassword, new_password: newPassword },
+      })
+      if (res.ok) {
+        setPasswordSuccess('Password changed successfully')
+        setCurrentPassword('')
+        setNewPassword('')
+        setConfirmPassword('')
+      } else {
+        const data = await res.json()
+        setPasswordError(data.detail || 'Password change failed')
+      }
     } catch (err: any) {
-      console.error('❌ Password change error:', err)
       setPasswordError(err.message)
     }
   }
 
   const handleInitiateTotpSetup = async () => {
-    console.log('🔑 handleInitiateTotpSetup called')
     setSettingUpTotp(true)
     setTotpError('')
     try {
-      console.log('Calling api.initiateTotpSetup...')
-      const data = await api.initiateTotpSetup(accessToken!)
-      console.log('✅ TOTP setup initiated:', data)
-      setTotpSecret(data.secret)
-      setTotpUri(data.provisioning_uri)
+      const res = await request('/api/admin/account/totp/setup-initiate', { method: 'POST' })
+      if (res.ok) {
+        const data = await res.json()
+        setTotpSecret(data.secret)
+        setTotpUri(data.provisioning_uri)
+      } else {
+        const data = await res.json()
+        setTotpError(data.detail || 'TOTP setup failed')
+        setSettingUpTotp(false)
+      }
     } catch (err: any) {
-      console.error('❌ TOTP initiate error:', err)
       setTotpError(err.message)
       setSettingUpTotp(false)
     }
@@ -86,7 +92,6 @@ export default function Account() {
 
   const handleVerifyTotp = async (e: React.FormEvent) => {
     e.preventDefault()
-    console.log('✅ handleVerifyTotp called with code:', totpCode)
     setTotpError('')
     setTotpSuccess('')
 
@@ -96,19 +101,22 @@ export default function Account() {
     }
 
     try {
-      console.log('Calling api.verifyTotpSetup...')
-      await api.verifyTotpSetup(accessToken!, totpCode)
-      console.log('✅ TOTP verification successful')
-      setTotpSuccess('2FA configured successfully!')
-      setTotpCode('')
-      setTotpSecret('')
-      setTotpUri('')
-      setSettingUpTotp(false)
-      // Refresh profile
-      const data = await api.profile(accessToken!)
-      setProfile(data)
+      const res = await request('/api/admin/account/totp/setup-verify', {
+        method: 'POST',
+        body: { code: totpCode },
+      })
+      if (res.ok) {
+        setTotpSuccess('2FA configured successfully!')
+        setTotpCode('')
+        setTotpSecret('')
+        setTotpUri('')
+        setSettingUpTotp(false)
+        await fetchProfile()
+      } else {
+        const data = await res.json()
+        setTotpError(data.detail || 'TOTP verification failed')
+      }
     } catch (err: any) {
-      console.error('❌ TOTP verify error:', err)
       setTotpError(err.message)
     }
   }

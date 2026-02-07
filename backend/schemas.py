@@ -5,22 +5,8 @@ from datetime import datetime
 from enum import Enum
 import re
 
-# ============= Admin Schemas =============
-class AdminLoginRequest(BaseModel):
-    username: str
-    password: str
-
-class AdminLoginResponse(BaseModel):
-    temp_token: str
-    message: str = "2FA required"
-
-class Admin2FARequest(BaseModel):
-    temp_token: str
-    totp_code: str
-
-class Admin2FAResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
+# ============= Admin Schemas (re-exported from admin_schemas for backward compatibility) =============
+from admin_schemas import AdminLoginRequest, AdminLoginResponse
 
 
 # ============= User Auth Schemas =============

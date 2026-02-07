@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, ReactNode, useEffect } from 'react'
+import { createContext, useContext, useState, useCallback, ReactNode } from 'react'
 
 interface AuthContextType {
   accessToken: string | null
@@ -25,44 +25,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.getItem('username')
   )
 
-  // Poll localStorage for changes so we stay in sync with direct localStorage updates
-  useEffect(() => {
-    let lastToken = localStorage.getItem('accessToken')
-    
-    const interval = setInterval(() => {
-      const currentToken = localStorage.getItem('accessToken')
-      if (currentToken !== lastToken) {
-        console.log('📦 localStorage changed, syncing with state')
-        lastToken = currentToken
-        setAccessToken(currentToken)
-        setRefreshToken(localStorage.getItem('refreshToken'))
-        setUsername(localStorage.getItem('username'))
-      }
-    }, 100)
-
-    return () => clearInterval(interval)
-  }, [])
-
   const login = useCallback(async (user: string, password: string, ip?: string) => {
-    console.log('📡 AuthContext.login called with:', { user, ip })
     const headers: any = { 'Content-Type': 'application/json' }
     if (ip) {
       headers['X-Forwarded-For'] = ip
     }
     
-    console.log('🔄 Fetching /api/admin/login...')
-    let response
-    try {
-      response = await fetch('/api/admin/login', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ username: user, password }),
-      })
-      console.log('📊 Response status:', response.status, response.statusText)
-    } catch (fetchErr) {
-      console.error('❌ Fetch error:', fetchErr)
-      throw new Error('Network error: ' + (fetchErr as any).message)
-    }
+    const response = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ username: user, password }),
+    })
 
     if (!response.ok) {
       let errData
@@ -71,36 +44,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch {
         errData = { detail: response.statusText }
       }
-      console.error('❌ Login failed:', errData)
       throw new Error(errData.detail || 'Login failed')
     }
 
-    let data
-    try {
-      data = await response.json()
-      console.log('✅ Login response parsed:', { has_temp_token: !!data.temp_token, has_access_token: !!data.access_token, keys: Object.keys(data) })
-    } catch (parseErr) {
-      console.error('❌ Parse error:', parseErr)
-      throw new Error('Failed to parse login response')
-    }
+    const data = await response.json()
 
     setUsername(user)
     localStorage.setItem('username', user)
 
     if (data.temp_token) {
-      console.log('🔑 2FA required, setting temp token')
       setTotpRequired(true)
       localStorage.setItem('tempToken', data.temp_token)
     } else if (data.access_token) {
-      console.log('✨ Setting access token:', data.access_token.substring(0, 20) + '...')
       setAccessToken(data.access_token)
       setRefreshToken(data.refresh_token)
       setTotpRequired(false)
       localStorage.setItem('accessToken', data.access_token)
       localStorage.setItem('refreshToken', data.refresh_token)
-      console.log('✅ Token saved to localStorage and state')
     } else {
-      console.error('❌ No tokens in response:', data)
       throw new Error('No tokens in response')
     }
   }, [])

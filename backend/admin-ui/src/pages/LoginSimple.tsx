@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext'
 import '../styles/Auth.css'
 
 export default function LoginSimple() {
   const navigate = useNavigate()
+  const { accessToken, login, verify2fa } = useAuth()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [totp, setTotp] = useState('')
@@ -12,99 +14,44 @@ export default function LoginSimple() {
   const [loading, setLoading] = useState(false)
   const [step, setStep] = useState<'password' | 'totp'>('password')
 
-  // Watch for token in localStorage and navigate when it appears
+  // Navigate to dashboard once we have a valid access token
   useEffect(() => {
-    const checkToken = setInterval(() => {
-      const token = localStorage.getItem('accessToken')
-      if (token) {
-        console.log('✅ Token detected in localStorage, navigating to dashboard')
-        clearInterval(checkToken)
-        navigate('/dashboard')
-      }
-    }, 50)
-    
-    return () => clearInterval(checkToken)
-  }, [navigate])
+    if (accessToken) {
+      navigate('/dashboard')
+    }
+  }, [accessToken, navigate])
 
   const handlePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    console.log('🔐 Password login submitted')
     setError('')
     setLoading(true)
-    
-    try {
-      console.log('Fetching /api/admin/login')
-      const response = await fetch('/api/admin/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
-      })
-      
-      console.log('Response status:', response.status)
-      
-      if (!response.ok) {
-        const errData = await response.json()
-        setError(errData.detail || 'Login failed')
-        setLoading(false)
-        return
-      }
 
-      const data = await response.json()
-      console.log('Response data keys:', Object.keys(data))
-      
-      if (data.access_token) {
-        console.log('✅ No 2FA needed, storing token in localStorage')
-        localStorage.setItem('accessToken', data.access_token)
-        localStorage.setItem('refreshToken', data.refresh_token)
-        // Navigation will happen via the useEffect above
-      } else if (data.temp_token) {
-        console.log('🔑 2FA required, showing TOTP input')
-        setTempToken(data.temp_token)
+    try {
+      await login(username, password)
+      // If 2FA is needed, AuthContext sets totpRequired and stores tempToken
+      const storedTemp = localStorage.getItem('tempToken')
+      if (storedTemp) {
+        setTempToken(storedTemp)
         setStep('totp')
         setLoading(false)
-      } else {
-        console.error('❌ No tokens in response:', data)
-        setError('Invalid response from server')
-        setLoading(false)
       }
+      // Otherwise accessToken will be set and useEffect navigates
     } catch (err: any) {
-      console.error('Error:', err)
-      setError(err.message || 'Network error')
+      setError(err.message || 'Login failed')
       setLoading(false)
     }
   }
 
   const handleTotpSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    console.log('✅ TOTP code submitted:', totp)
     setError('')
     setLoading(true)
-    
-    try {
-      console.log('Fetching /api/admin/2fa')
-      const response = await fetch('/api/admin/2fa', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ temp_token: tempToken, totp_code: totp }),
-      })
-      
-      console.log('Response status:', response.status)
-      
-      if (!response.ok) {
-        const errData = await response.json()
-        setError(errData.detail || '2FA verification failed')
-        setLoading(false)
-        return
-      }
 
-      const data = await response.json()
-      console.log('✅ 2FA successful, storing tokens')
-      localStorage.setItem('accessToken', data.access_token)
-      localStorage.setItem('refreshToken', data.refresh_token)
-      // Navigation will happen via the useEffect above
+    try {
+      await verify2fa(tempToken, totp)
+      // accessToken will be set and useEffect navigates
     } catch (err: any) {
-      console.error('Error:', err)
-      setError(err.message || 'Network error')
+      setError(err.message || '2FA verification failed')
       setLoading(false)
     }
   }

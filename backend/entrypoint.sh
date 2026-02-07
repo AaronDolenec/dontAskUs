@@ -37,4 +37,4 @@ echo "Access the Admin UI at: http://localhost:5173/admin"
 echo "API Documentation: http://localhost:8000/docs"
 echo "════════════════════════════════════════════════════════════════════════════════"
 echo ""
-exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+exec uvicorn main:app --host 0.0.0.0 --port 8000

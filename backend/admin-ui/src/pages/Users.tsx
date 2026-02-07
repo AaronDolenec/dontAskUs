@@ -1,12 +1,34 @@
-import React, { useEffect, useState } from 'react'
-import { api } from '../lib/api'
+import { useEffect, useState } from 'react'
+import { useApi } from '../api/client'
 import '../styles/Management.css'
 
+interface UserRow {
+  id: number
+  user_id: string
+  display_name: string
+  group_id: number
+  group_name?: string
+  account_email?: string
+  color_avatar?: string
+  answer_streak: number
+  longest_answer_streak: number
+  last_answer_date?: string
+  is_suspended: boolean
+  last_known_ip?: string
+  created_at: string
+}
+
+interface GroupRow {
+  id: number
+  name: string
+}
+
 export default function Users() {
-  const [users, setUsers] = useState([])
+  const { request } = useApi()
+  const [users, setUsers] = useState<UserRow[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [groups, setGroups] = useState([])
+  const [groups, setGroups] = useState<GroupRow[]>([])
   const [showNewForm, setShowNewForm] = useState(false)
   const [newUserName, setNewUserName] = useState('')
   const [newUserGroupId, setNewUserGroupId] = useState('')
@@ -14,38 +36,52 @@ export default function Users() {
 
   async function load() {
     setLoading(true)
-    const res = await api('/api/admin/users?limit=50&offset=0')
-    if (res.ok) {
-      const data = await res.json()
-      setUsers(data.users)
-      setTotal(data.total)
+    try {
+      const res = await request('/api/admin/users?limit=50&offset=0')
+      if (res.ok) {
+        const data = await res.json()
+        setUsers(data.users)
+        setTotal(data.total)
+      }
+    } catch (err) {
+      console.error('Failed to load users:', err)
     }
     setLoading(false)
   }
 
   async function loadGroups() {
-    const res = await api('/api/admin/groups?limit=100&offset=0')
-    if (res.ok) {
-      const data = await res.json()
-      setGroups(data.groups)
+    try {
+      const res = await request('/api/admin/groups?limit=100&offset=0')
+      if (res.ok) {
+        const data = await res.json()
+        setGroups(data.groups)
+      }
+    } catch (err) {
+      console.error('Failed to load groups:', err)
     }
   }
 
-  useEffect(() => { 
+  useEffect(() => {
     load()
     loadGroups()
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function toggleSuspend(u) {
-    const res = await api(`/api/admin/users/${u.id}/suspension`, {
-      method: 'PUT',
-      body: JSON.stringify({ is_suspended: !u.is_suspended, suspension_reason: !u.is_suspended ? 'By admin' : null })
-    })
-    if (res.ok) load()
+  async function toggleSuspend(u: UserRow) {
+    try {
+      const res = await request(`/api/admin/users/${u.id}/suspension`, {
+        method: 'PUT',
+        body: { is_suspended: !u.is_suspended, suspension_reason: u.is_suspended ? null : 'By admin' },
+      })
+      if (res.ok) load()
+    } catch (err) {
+      console.error('Error toggling suspension:', err)
+    }
   }
 
-  async function resetPassword(u) {
-    const newPassword = prompt(`Enter new password for ${u.display_name} (${u.account_email || 'no account'}):\n\nRequirements: min 8 chars, uppercase, lowercase, digit`)
+  async function resetPassword(u: UserRow) {
+    const newPassword = prompt(
+      `Enter new password for ${u.display_name} (${u.account_email || 'no account'}):\n\nRequirements: min 8 chars, uppercase, lowercase, digit`,
+    )
     if (!newPassword) return
     if (newPassword.length < 8) {
       alert('Password must be at least 8 characters')
@@ -54,38 +90,33 @@ export default function Users() {
     const reason = prompt('Reason for password reset:')
     if (!reason) return
     try {
-      const res = await api(`/api/admin/users/${u.id}/reset-password`, {
+      const res = await request(`/api/admin/users/${u.id}/reset-password`, {
         method: 'POST',
-        body: JSON.stringify({ new_password: newPassword, reason })
+        body: { new_password: newPassword, reason },
       })
       if (res.ok) {
         const data = await res.json()
         alert(`Password reset successfully for ${data.account_email}`)
       } else {
         const errData = await res.json()
-        console.error('Error resetting password:', errData)
         alert('Error: ' + (errData.detail || 'Failed to reset password'))
       }
-    } catch (err) {
-      console.error('Exception resetting password:', err)
+    } catch (err: any) {
       alert('Error: ' + err.message)
     }
   }
 
-  async function deleteUser(u) {
-    if (!confirm(`Delete user "${u.name}"? All their answers will be deleted too. This cannot be undone.`)) return
+  async function deleteUser(u: UserRow) {
+    if (!confirm(`Delete user "${u.display_name}"? All their answers will be deleted too. This cannot be undone.`)) return
     try {
-      const res = await api(`/api/admin/users/${u.id}`, { method: 'DELETE' })
+      const res = await request(`/api/admin/users/${u.id}`, { method: 'DELETE' })
       if (res.ok) {
-        console.log('User deleted successfully')
         await load()
       } else {
         const errData = await res.json()
-        console.error('Error deleting user:', errData)
         alert('Error: ' + (errData.detail || 'Failed to delete user'))
       }
-    } catch (err) {
-      console.error('Exception deleting user:', err)
+    } catch (err: any) {
       alert('Error: ' + err.message)
     }
   }
@@ -100,20 +131,11 @@ export default function Users() {
       return
     }
     try {
-      const body = { 
-        display_name: newUserName,
-        group_id: parseInt(newUserGroupId)
-      }
-      if (newUserEmail.trim()) {
-        body.account_email = newUserEmail.trim()
-      }
-      const res = await api('/api/admin/users', {
-        method: 'POST',
-        body: JSON.stringify(body)
-      })
+      const body: any = { display_name: newUserName, group_id: parseInt(newUserGroupId) }
+      if (newUserEmail.trim()) body.account_email = newUserEmail.trim()
+      const res = await request('/api/admin/users', { method: 'POST', body })
       if (res.ok) {
         const data = await res.json()
-        console.log('Created user:', data)
         alert(`User created!${data.account_email ? ` Linked to account: ${data.account_email}` : ' No account linked.'}`)
         setNewUserName('')
         setNewUserGroupId('')
@@ -122,11 +144,9 @@ export default function Users() {
         await load()
       } else {
         const errData = await res.json()
-        console.error('Error creating user:', errData)
         alert('Error: ' + (errData.detail || 'Failed to create user'))
       }
-    } catch (err) {
-      console.error('Exception creating user:', err)
+    } catch (err: any) {
       alert('Error: ' + err.message)
     }
   }
@@ -144,25 +164,9 @@ export default function Users() {
 
       {showNewForm && (
         <div style={{ marginBottom: 16, padding: 12, border: '1px solid var(--border-color)', borderRadius: 4, backgroundColor: 'var(--bg-primary)' }}>
-          <input
-            type="text"
-            placeholder="Display name"
-            value={newUserName}
-            onChange={e => setNewUserName(e.target.value)}
-            style={{ marginRight: 8, padding: 6 }}
-          />
-          <input
-            type="email"
-            placeholder="Account email (optional)"
-            value={newUserEmail}
-            onChange={e => setNewUserEmail(e.target.value)}
-            style={{ marginRight: 8, padding: 6 }}
-          />
-          <select
-            value={newUserGroupId}
-            onChange={e => setNewUserGroupId(e.target.value)}
-            style={{ marginRight: 8, padding: 6 }}
-          >
+          <input type="text" placeholder="Display name" value={newUserName} onChange={e => setNewUserName(e.target.value)} style={{ marginRight: 8, padding: 6 }} />
+          <input type="email" placeholder="Account email (optional)" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} style={{ marginRight: 8, padding: 6 }} />
+          <select value={newUserGroupId} onChange={e => setNewUserGroupId(e.target.value)} style={{ marginRight: 8, padding: 6 }}>
             <option value="">Select group...</option>
             {groups.map(g => (
               <option key={g.id} value={g.id}>{g.name}</option>
@@ -171,6 +175,7 @@ export default function Users() {
           <button onClick={createUser} style={{ padding: '6px 12px' }}>Create</button>
         </div>
       )}
+
       <div style={{ overflowX: 'auto' }}>
         <table className="management-table">
           <thead>
@@ -199,20 +204,12 @@ export default function Users() {
                 <td>{u.group_name || `Group ${u.group_id}`}</td>
                 <td style={{ fontSize: '11px' }}>{u.account_email || <span style={{ color: 'var(--text-secondary)' }}>No account</span>}</td>
                 <td>
-                  <div style={{ 
-                    width: 20, 
-                    height: 20, 
-                    backgroundColor: u.color_avatar, 
-                    borderRadius: '50%',
-                    margin: 'auto'
-                  }}></div>
+                  <div style={{ width: 20, height: 20, backgroundColor: u.color_avatar, borderRadius: '50%', margin: 'auto' }} />
                 </td>
                 <td>{u.answer_streak}</td>
                 <td>{u.longest_answer_streak}</td>
                 <td>{u.last_answer_date ? new Date(u.last_answer_date).toLocaleDateString() : 'Never'}</td>
-                <td style={{ color: u.is_suspended ? 'red' : 'green' }}>
-                  {u.is_suspended ? 'Yes' : 'No'}
-                </td>
+                <td style={{ color: u.is_suspended ? 'red' : 'green' }}>{u.is_suspended ? 'Yes' : 'No'}</td>
                 <td>{u.last_known_ip || 'N/A'}</td>
                 <td>{new Date(u.created_at).toLocaleDateString()}</td>
                 <td style={{ whiteSpace: 'nowrap' }}>

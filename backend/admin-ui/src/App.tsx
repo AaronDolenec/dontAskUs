@@ -14,7 +14,6 @@ import './styles/App.css'
 
 function AppRoutes() {
   const { accessToken } = useAuth()
-  console.log('AppRoutes rendering, accessToken:', !!accessToken)
 
   return (
     <Routes>
@@ -85,7 +84,6 @@ function AppRoutes() {
 }
 
 export default function App() {
-  console.log('App rendering')
   return (
     <ErrorBoundary>
       <AuthProvider>

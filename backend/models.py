@@ -10,16 +10,6 @@ import bcrypt
 from database import Base
 
 
-
-
-def hash_password(password: str) -> str:
-    """Hash a password for storing in the database."""
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-def verify_password(password: str, hashed: str) -> bool:
-    """Verify a password against its hash."""
-    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-
 def generate_totp_secret() -> str:
     return pyotp.random_base32()
 
@@ -58,10 +48,10 @@ class Account(Base):
     memberships = relationship("User", back_populates="account", cascade="all, delete-orphan")
 
     def set_password(self, password: str):
-        self.password_hash = hash_password(password)
+        self.password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
     def check_password(self, password: str) -> bool:
-        return verify_password(password, self.password_hash)
+        return bcrypt.checkpw(password.encode('utf-8'), self.password_hash.encode('utf-8'))
 
 
 class AdminUser(Base):
@@ -179,7 +169,7 @@ class User(Base):
     is_suspended = Column(Boolean, default=False)
     suspension_reason = Column(Text, nullable=True)
     last_known_ip = Column(INET, nullable=True)
-    user_metadata = Column(JSONB, nullable=True, default={})
+    user_metadata = Column(JSONB, nullable=True, default=None)
     
     group = relationship("Group", back_populates="members", foreign_keys=[group_id])
     account = relationship("Account", back_populates="memberships", foreign_keys=[account_id])
