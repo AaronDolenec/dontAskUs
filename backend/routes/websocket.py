@@ -8,13 +8,13 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy import func, and_
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import Account, DailyQuestion, Vote, QuestionTypeEnum
-from utils import (
+from core.database import get_db
+from core.models import Account, DailyQuestion, Vote, QuestionTypeEnum
+from auth.utils import (
     verify_user_jwt, get_membership, get_group_by_id, get_option_counts,
     normalize_answer_submission,
 )
-from ws_manager import manager
+from services.ws_manager import manager
 
 router = APIRouter()
 

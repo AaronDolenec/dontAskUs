@@ -9,16 +9,16 @@ from slowapi.util import get_remote_address
 from sqlalchemy import func, and_
 from sqlalchemy.orm import Session
 
-from config import USER_JWT_ACCESS_EXPIRE_MINUTES, MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES
-from database import get_db
-from models import Account, User, Group, QuestionSet, GroupQuestionSet
-from schemas import (
+from core.config import USER_JWT_ACCESS_EXPIRE_MINUTES, MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES
+from core.database import get_db
+from core.models import Account, User, Group, QuestionSet, GroupQuestionSet
+from core.schemas import (
     AuthRegisterRequest, AuthLoginRequest, AuthTokenResponse, AuthRefreshRequest,
     AccountResponse, AccountGroupMembership, AccountMeResponse,
     UserChangePasswordRequest, JoinGroupRequest, GroupCreate,
 )
-from seed_defaults import initialize_default_question_set
-from utils import (
+from scripts.seed_defaults import initialize_default_question_set
+from auth.utils import (
     hash_password, verify_password, create_user_jwt, verify_user_jwt,
     get_current_account, get_avatar_url, get_random_avatar_color,
     generate_invite_code, generate_admin_token, hash_token,

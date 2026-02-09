@@ -7,10 +7,10 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import Account, Group, User, QuestionSet, GroupQuestionSet
-from schemas import GroupResponsePublic
-from utils import (
+from core.database import get_db
+from core.models import Account, Group, User, QuestionSet, GroupQuestionSet
+from core.schemas import GroupResponsePublic
+from auth.utils import (
     get_group_by_id, get_current_account, get_membership, get_avatar_url,
 )
 

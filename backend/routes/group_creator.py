@@ -6,12 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from sqlalchemy import func, and_
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import (
+from core.database import get_db
+from core.models import (
     Group, QuestionSet, QuestionTemplate, QuestionSetTemplate,
     GroupQuestionSet, GroupCustomSet, DailyQuestion, QuestionTypeEnum,
 )
-from utils import get_user_from_request
+from auth.utils import get_user_from_request
 
 router = APIRouter(prefix="/api/groups/{group_id}/question-sets", tags=["Group Creator"])
 

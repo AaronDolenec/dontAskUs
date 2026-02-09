@@ -7,7 +7,7 @@ import uuid
 import enum
 import pyotp
 import bcrypt
-from database import Base
+from .database import Base
 
 
 def generate_totp_secret() -> str:

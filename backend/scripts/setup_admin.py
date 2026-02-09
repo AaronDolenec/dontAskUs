@@ -11,9 +11,9 @@ from datetime import datetime, timezone
 # Add backend to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from database import SessionLocal
-from models import AdminUser
-from admin_auth import hash_password, get_totp_secret, get_totp_uri
+from core.database import SessionLocal
+from core.models import AdminUser
+from auth.admin_auth import hash_password, get_totp_secret, get_totp_uri
 import pyotp
 
 

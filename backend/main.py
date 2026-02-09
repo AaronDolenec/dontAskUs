@@ -23,10 +23,9 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.gzip import GZipMiddleware
 
-from config import ALLOWED_ORIGINS, AVATAR_UPLOAD_DIR, SCHEDULE_INTERVAL_SECONDS, LOG_LEVEL
-from database import engine, Base
-from scheduler import background_scheduler
-from seed_defaults import initialize_default_question_set, assign_default_set_to_unassigned_groups
+from core import ALLOWED_ORIGINS, AVATAR_UPLOAD_DIR, SCHEDULE_INTERVAL_SECONDS, LOG_LEVEL, engine, Base
+from services import background_scheduler
+from scripts import initialize_default_question_set, assign_default_set_to_unassigned_groups
 from routes import auth, groups, questions, question_sets, push, avatars, websocket, admin, group_creator
 
 load_dotenv()

@@ -10,14 +10,14 @@ from slowapi.util import get_remote_address
 from sqlalchemy import func, and_
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import (
+from core.database import get_db
+from core.models import (
     Group, User, DailyQuestion, Vote, QuestionTemplate, QuestionSet,
     QuestionSetTemplate, GroupQuestionSet, QuestionTypeEnum, UserDeviceToken,
 )
-from push_notifications import push_service
-from schemas import DailyQuestionCreate, DailyQuestionResponse, AnswerSubmissionCreate
-from utils import (
+from services.push_notifications import push_service
+from core.schemas import DailyQuestionCreate, DailyQuestionResponse, AnswerSubmissionCreate
+from auth.utils import (
     get_group_by_id, require_group_admin, get_user_for_group,
     get_group_member_names, generate_duos, get_option_counts, get_user_vote,
     get_user_group_streak, update_user_group_streak, normalize_answer_submission,

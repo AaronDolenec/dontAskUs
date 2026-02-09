@@ -3,8 +3,8 @@ from typing import List, Dict
 
 from sqlalchemy.orm import Session
 
-from database import SessionLocal
-from models import (
+from core.database import SessionLocal
+from core.models import (
     QuestionTemplate,
     QuestionSet,
     QuestionSetTemplate,
@@ -145,7 +145,7 @@ def assign_default_set_to_unassigned_groups():
                 return
 
         # Late import to avoid circulars at module import time
-        from models import Group, GroupQuestionSet
+        from core.models import Group, GroupQuestionSet
 
         groups = db.query(Group).all()
         for g in groups:

@@ -13,7 +13,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer
 from sqlalchemy.orm import Session
 
-from config import (
+from core.config import (
     ADMIN_AUTH_SECRET_KEY as SECRET_KEY,
     ADMIN_AUTH_JWT_EXPIRY_MINUTES as ADMIN_JWT_EXPIRY_MINUTES,
     ADMIN_AUTH_REFRESH_EXPIRY_DAYS as ADMIN_REFRESH_EXPIRY_DAYS,
@@ -21,9 +21,9 @@ from config import (
     ADMIN_LOGIN_ATTEMPT_WINDOW_MINUTES as LOGIN_ATTEMPT_WINDOW_MINUTES,
     ADMIN_LOCKOUT_DURATION_MINUTES as LOCKOUT_DURATION_MINUTES,
 )
-from database import get_db
-from models import AdminUser, AuditLog
-from utils import hash_password, verify_password
+from core.database import get_db
+from core.models import AdminUser, AuditLog
+from .utils import hash_password, verify_password
 
 # Bearer token scheme
 security = HTTPBearer()

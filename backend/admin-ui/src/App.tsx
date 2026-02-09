@@ -9,6 +9,7 @@ import Users from './pages/Users'
 import Groups from './pages/Groups'
 import QuestionSets from './pages/QuestionSets'
 import AuditLogs from './pages/AuditLogs'
+import ApiLogs from './pages/ApiLogs'
 import Account from './pages/Account'
 import './styles/App.css'
 
@@ -64,6 +65,16 @@ function AppRoutes() {
           <ProtectedRoute>
             <Layout>
               <AuditLogs />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/api-logs"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <ApiLogs />
             </Layout>
           </ProtectedRoute>
         }

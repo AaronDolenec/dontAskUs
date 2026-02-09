@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check if admin user exists and show details"""
-from database import SessionLocal
-from models import AdminUser
+from core.database import SessionLocal
+from core.models import AdminUser
 
 db = SessionLocal()
 

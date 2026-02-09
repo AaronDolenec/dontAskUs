@@ -99,6 +99,18 @@ export default function Layout({ children }: LayoutProps) {
               href="#"
               onClick={e => {
                 e.preventDefault()
+                navigate('/api-logs')
+              }}
+              className={isActive('/api-logs') ? 'active' : ''}
+            >
+              🔍 API Logs
+            </a>
+          </li>
+          <li>
+            <a
+              href="#"
+              onClick={e => {
+                e.preventDefault()
                 navigate('/account')
               }}
               className={isActive('/account') ? 'active' : ''}

@@ -16,13 +16,13 @@ from datetime import datetime, timezone
 
 from sqlalchemy import func, and_
 
-from database import SessionLocal
-from models import (
+from core.database import SessionLocal
+from core.models import (
     Group, User, DailyQuestion, QuestionSet, QuestionSetTemplate,
     QuestionTemplate, GroupQuestionSet, QuestionTypeEnum, UserDeviceToken,
 )
-from push_notifications import push_service
-from utils import get_group_member_names, generate_duos
+from .push_notifications import push_service
+from auth.utils import get_group_member_names, generate_duos
 
 
 def _select_template(db, group, selected_today: set | None = None):

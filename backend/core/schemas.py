@@ -6,7 +6,7 @@ from enum import Enum
 import re
 
 # ============= Admin Schemas (re-exported from admin_schemas for backward compatibility) =============
-from admin_schemas import AdminLoginRequest, AdminLoginResponse
+from auth.admin_schemas import AdminLoginRequest, AdminLoginResponse
 
 
 # ============= User Auth Schemas =============

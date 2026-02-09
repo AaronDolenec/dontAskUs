@@ -26,8 +26,8 @@ database_url = os.getenv("DATABASE_URL", "postgresql+psycopg2://qauser:securepas
 config.set_main_option("sqlalchemy.url", database_url)
 
 # Import models for autogenerate support
-from database import Base
-from models import *  # noqa: F401, F403  # pylint: disable=wildcard-import,unused-wildcard-import
+from core.database import Base
+from core.models import *  # noqa: F401, F403  # pylint: disable=wildcard-import,unused-wildcard-import
 
 target_metadata = Base.metadata
 

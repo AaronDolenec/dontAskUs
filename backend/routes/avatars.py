@@ -9,9 +9,9 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
-from config import AVATAR_UPLOAD_DIR, AVATAR_MAX_SIZE_BYTES, AVATAR_MAX_SIZE_MB, AVATAR_ALLOWED_TYPES
-from database import get_db
-from utils import get_user_from_request, validate_image_magic_bytes, process_avatar_image
+from core.config import AVATAR_UPLOAD_DIR, AVATAR_MAX_SIZE_BYTES, AVATAR_MAX_SIZE_MB, AVATAR_ALLOWED_TYPES
+from core.database import get_db
+from auth.utils import get_user_from_request, validate_image_magic_bytes, process_avatar_image
 
 router = APIRouter(prefix="/api/users/{user_id}/avatar", tags=["User Profile"])
 limiter = Limiter(key_func=get_remote_address)

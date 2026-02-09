@@ -5,16 +5,16 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import (
+from core.database import get_db
+from core.models import (
     Account, QuestionSet, QuestionTemplate, QuestionSetTemplate,
     GroupQuestionSet, Group,
 )
-from schemas import (
+from core.schemas import (
     QuestionSetCreate, QuestionSetResponse, QuestionTemplateResponse,
     GroupQuestionSetsResponse, GroupAssignSetsRequest,
 )
-from utils import get_group_by_id, require_group_admin, get_current_account
+from auth.utils import get_group_by_id, require_group_admin, get_current_account
 
 router = APIRouter(prefix="/api", tags=["Question Sets"])
 

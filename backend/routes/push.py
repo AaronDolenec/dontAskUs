@@ -8,11 +8,11 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import UserDeviceToken
-from push_notifications import push_service
-from schemas import DeviceTokenRegister, DeviceTokenResponse, PushNotificationStatus
-from utils import get_user_from_request
+from core.database import get_db
+from core.models import UserDeviceToken
+from services.push_notifications import push_service
+from core.schemas import DeviceTokenRegister, DeviceTokenResponse, PushNotificationStatus
+from auth.utils import get_user_from_request
 
 router = APIRouter(prefix="/api", tags=["Push Notifications"])
 limiter = Limiter(key_func=get_remote_address)

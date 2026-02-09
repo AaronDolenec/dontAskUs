@@ -27,7 +27,7 @@ echo "Migrations completed!"
 
 # Create initial admin user from env vars if none exists
 echo "Ensuring initial admin user exists (env-driven)..."
-python create_admin_user.py
+python -m scripts.create_admin_user
 echo "Admin user setup complete!"
 
 # Start the application

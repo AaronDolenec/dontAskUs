@@ -10,28 +10,28 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy import func, and_, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
-from admin_auth import (
+from auth.admin_auth import (
     authenticate_admin, verify_admin_totp, generate_temp_token, verify_temp_token,
     generate_access_token, generate_refresh_token,
     get_current_admin, get_admin_from_refresh_token,
     record_successful_login, log_admin_action, AdminAuthError,
     get_totp_secret, get_totp_uri, hash_password, verify_password,
 )
-from admin_schemas import (
+from auth.admin_schemas import (
     AdminLoginRequest, AdminLoginResponse, AdminTOTPVerifyRequest, AdminTokenResponse,
     AdminRefreshRequest, AdminProfileResponse, AdminDashboardStats, UserSuspensionRequest,
     AccountPasswordResetRequest, AccountPasswordResetResponse, AuditLogResponse,
     ChangePasswordRequest, TOTPSetupStartResponse, TOTPSetupVerifyRequest,
 )
-from database import get_db
-from models import (
+from core.database import get_db
+from core.models import (
     AdminUser, Account, Group, User, DailyQuestion, Vote,
     QuestionSet, QuestionTemplate, QuestionSetTemplate, GroupQuestionSet,
     AuditLog, QuestionTypeEnum,
 )
-from utils import (
+from auth.utils import (
     extract_client_ip, generate_invite_code, generate_admin_token,
     hash_token, generate_qr_code, get_random_avatar_color,
 )
@@ -391,6 +391,155 @@ async def admin_reset_user_password(
                      after_state={"password_reset": True, "account_email": account.email, "lockout_cleared": True},
                      ip_address=ip or "unknown", reason=request.reason, db=db)
     return AccountPasswordResetResponse(message=f"Password reset for {account.email}", account_email=account.email)
+
+
+# ============= Account Management =============
+
+@router.get("/accounts")
+async def list_all_accounts(
+    admin: AdminUser = Depends(get_current_admin), db: Session = Depends(get_db),
+    limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0),
+    search: Optional[str] = Query(None, description="Search by email or display name"),
+):
+    """List all accounts (platform-level user identities)."""
+    query = db.query(Account)
+    if search:
+        search_term = f"%{search.lower()}%"
+        query = query.filter(
+            (func.lower(Account.email).like(search_term)) |
+            (func.lower(Account.display_name).like(search_term))
+        )
+    total = query.count()
+    accounts = (
+        query.options(joinedload(Account.memberships).joinedload(User.group))
+        .order_by(Account.created_at.desc()).limit(limit).offset(offset).all()
+    )
+    # Deduplicate because joinedload with limit can produce dupes
+    seen = set()
+    unique_accounts = []
+    for a in accounts:
+        if a.id not in seen:
+            seen.add(a.id)
+            unique_accounts.append(a)
+    result = []
+    for a in unique_accounts:
+        group_memberships = [
+            {
+                "user_id": m.id, "group_id": m.group_id,
+                "group_name": m.group.name if m.group else None,
+                "display_name": m.display_name,
+            }
+            for m in a.memberships
+        ]
+        result.append({
+            "id": a.id, "account_id": a.account_id, "email": a.email,
+            "display_name": a.display_name, "is_active": a.is_active,
+            "created_at": a.created_at, "last_login": a.last_login,
+            "group_count": len(group_memberships), "groups": group_memberships,
+        })
+    return {"accounts": result, "total": total, "limit": limit, "offset": offset}
+
+
+@router.post("/accounts", response_model=dict)
+async def admin_create_account(
+    request_data: dict = Body(...), admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db), x_forwarded_for: str = Header(None), request_obj: Request = None,
+):
+    """Create a new user account (without requiring a group). Optionally add to a group."""
+    try:
+        email = request_data.get("email", "").strip().lower()
+        password = request_data.get("password", "")
+        display_name = request_data.get("display_name", "").strip()
+        group_id = request_data.get("group_id")  # optional
+
+        if not email:
+            raise ValueError("Email is required")
+        if not password or len(password) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        if not display_name or len(display_name) < 1:
+            raise ValueError("Display name is required")
+
+        # Check for existing account
+        existing = db.query(Account).filter(func.lower(Account.email) == email).first()
+        if existing:
+            raise ValueError(f"Account with email '{email}' already exists")
+
+        # Create the account
+        account = Account(
+            email=email,
+            password_hash=hash_password(password),
+            display_name=display_name,
+        )
+        db.add(account)
+        db.flush()
+
+        result = {
+            "id": account.id, "account_id": account.account_id, "email": account.email,
+            "display_name": account.display_name, "is_active": account.is_active,
+            "created_at": account.created_at, "group_membership": None,
+        }
+
+        # Optionally add to a group
+        if group_id:
+            group = db.query(Group).filter(Group.id == group_id).first()
+            if not group:
+                raise ValueError(f"Group with ID {group_id} not found")
+            group_display_name = request_data.get("group_display_name", display_name).strip()
+            if db.query(User).filter(and_(User.group_id == group_id, User.display_name == group_display_name)).first():
+                raise ValueError(f"Display name '{group_display_name}' already taken in group '{group.name}'")
+            color_avatar = request_data.get("color_avatar") or get_random_avatar_color()
+            user = User(
+                group_id=group_id, display_name=group_display_name,
+                account_id=account.id, color_avatar=color_avatar,
+            )
+            db.add(user)
+            db.flush()
+            result["group_membership"] = {
+                "user_id": user.id, "group_id": group_id, "group_name": group.name,
+                "display_name": group_display_name,
+            }
+
+        db.commit()
+        ip_address = extract_client_ip(request_obj, x_forwarded_for)
+        log_admin_action(
+            admin_id=admin.id, action="CREATE_ACCOUNT", target_type="ACCOUNT",
+            target_id=account.id, before_state=None,
+            after_state={"email": email, "display_name": display_name, "group_id": group_id},
+            ip_address=ip_address, reason=None, db=db,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        db.rollback()
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail="Error creating account: " + str(e))
+
+
+@router.delete("/accounts/{account_id}")
+async def admin_delete_account(
+    account_id: int, admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db), x_forwarded_for: str = Header(None), request_obj: Request = None,
+):
+    """Delete an account and all their group memberships and votes."""
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    before_state = {"email": account.email, "display_name": account.display_name}
+    # Delete votes for all user memberships
+    memberships = db.query(User).filter(User.account_id == account.id).all()
+    for m in memberships:
+        db.query(Vote).filter(Vote.user_id == m.id).delete()
+    # Cascade will handle User deletions via relationship
+    db.delete(account)
+    db.commit()
+    ip_address = extract_client_ip(request_obj, x_forwarded_for)
+    log_admin_action(
+        admin_id=admin.id, action="DELETE_ACCOUNT", target_type="ACCOUNT",
+        target_id=account_id, before_state=before_state, after_state=None,
+        ip_address=ip_address, reason=None, db=db,
+    )
+    return {"status": "deleted", "email": before_state["email"]}
 
 
 @router.post("/users", response_model=dict)

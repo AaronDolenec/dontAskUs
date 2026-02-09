@@ -21,12 +21,12 @@ from fastapi import HTTPException, Header, Depends, Request
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
-from config import (
+from core.config import (
     USER_JWT_SECRET, USER_JWT_ALGO, USER_JWT_ACCESS_EXPIRE_MINUTES,
     USER_JWT_REFRESH_EXPIRE_DAYS, AVATAR_MAGIC_BYTES, AVATAR_MAX_DIMENSION,
 )
-from database import get_db
-from models import Account, User, Group
+from core.database import get_db
+from core.models import Account, User, Group
 
 
 # ============= Password / Token Hashing =============
