@@ -2,7 +2,7 @@
 
 **Base URL:** `http://localhost:8000` (development)  
 **Version:** 1.3.0  
-**Last Updated:** February 9, 2026
+**Last Updated:** February 17, 2026
 
 **IMPORTANT:** All API endpoints require authentication unless explicitly marked as "Public" or "No
 Auth". After registration or login, include the access token in the `Authorization: Bearer <token>`
@@ -53,7 +53,7 @@ authentication** - users must register an account before they can join groups or
 
 **Additional Flows:**
 
-- **Group Admin Flow:** Create groups, manage question sets via admin token
+- **Group Creator Flow:** Create groups, manage question sets via creator JWT
 - **Instance Admin Flow:** Manage all users, groups, question sets, audit logs with 2FA
 - **Group Creator Flow:** Create private question sets (max 5 per group)
 
@@ -70,7 +70,7 @@ authentication** - users must register an account before they can join groups or
 - `/api/admin/2fa` - Instance admin 2FA verification
 - `/api/admin/refresh` - Instance admin token refresh
 
-Everything else requires a valid JWT access token or admin token.
+Everything else requires a valid JWT access token.
 
 ### Automatic Daily Questions
 
@@ -88,7 +88,7 @@ The backend **automatically generates a new question for each group every day**:
 | Flow            | Method               | Storage      |
 | --------------- | -------------------- | ------------ |
 | Users           | JWT (Email/Password) | Bearer Token |
-| Group Admins    | Admin Token          | Header       |
+| Group Creators  | JWT (Creator ID)     | Bearer Token |
 | Instance Admins | JWT (TOTP optional)  | Bearer Token |
 
 ---
@@ -352,8 +352,8 @@ Content-Type: application/json
 
 **Authentication:** Required (JWT Bearer token)
 
-Create a new group and automatically join as the first member. Returns an admin token for group
-management.
+Create a new group and automatically join as the first member. The creator is identified by
+`creator_id` on the group model.
 
 ```http
 POST /api/auth/groups/create
@@ -550,8 +550,8 @@ function getAvatarDisplay(user) {
 
 **Authentication:** Required (JWT Bearer token)
 
-Create a new group. The creator is automatically added as the first member. Returns an admin token
-for group management.
+Create a new group. The creator is automatically added as the first member and identified by
+`creator_id` on the group model.
 
 ```http
 POST /api/auth/groups/create
@@ -1971,7 +1971,7 @@ Content-Type: application/json
 
 ### Create Group (Admin)
 
-Create a new group. Generates invite code and admin token automatically.
+Create a new group. Generates invite code automatically.
 
 ```http
 POST /api/admin/groups
@@ -3015,31 +3015,44 @@ ADMIN_INITIAL_PASSWORD=changeme123
 ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
 
 # ═══════════════════════════════════════════════════════════════════════
+# USER JWT
+# ═══════════════════════════════════════════════════════════════════════
+USER_JWT_SECRET=your-user-jwt-secret-change-in-production
+USER_JWT_ACCESS_EXPIRE_MINUTES=30
+USER_JWT_REFRESH_EXPIRE_DAYS=30
+
+# ═══════════════════════════════════════════════════════════════════════
+# REVERSE PROXY — Uncomment if running behind nginx/traefik/etc.
+# Ensures real client IPs are logged instead of the proxy IP.
+# ═══════════════════════════════════════════════════════════════════════
+# TRUSTED_PROXIES=*
+
+# ═══════════════════════════════════════════════════════════════════════
 # OPTIONAL SETTINGS
 # ═══════════════════════════════════════════════════════════════════════
 LOG_LEVEL=INFO
 SCHEDULE_INTERVAL_SECONDS=86400
-USER_JWT_ACCESS_EXPIRE_MINUTES=30
-USER_JWT_REFRESH_EXPIRE_DAYS=30
 ```
 
 ### Environment Variable Reference
 
-| Variable                         | Description                      | Required | Default |
-| -------------------------------- | -------------------------------- | -------- | ------- |
-| `DATABASE_URL`                   | PostgreSQL connection string     | Yes      | -       |
-| `REDIS_URL`                      | Redis connection string          | Yes      | -       |
-| `SECRET_KEY`                     | JWT secret for user sessions     | Yes      | -       |
-| `ADMIN_JWT_SECRET`               | JWT secret for admin sessions    | Yes      | -       |
-| `ADMIN_INITIAL_USERNAME`         | Initial admin username           | No       | `admin` |
-| `ADMIN_INITIAL_PASSWORD`         | Initial admin password           | Yes      | -       |
-| `ALLOWED_ORIGINS`                | CORS allowed origins             | Yes      | -       |
-| `USER_JWT_ACCESS_EXPIRE_MINUTES` | User access token expiry (mins)  | No       | `30`    |
-| `USER_JWT_REFRESH_EXPIRE_DAYS`   | User refresh token expiry (days) | No       | `30`    |
-| `LOG_LEVEL`                      | Logging level                    | No       | `INFO`  |
-| `SCHEDULE_INTERVAL_SECONDS`      | Question scheduling interval     | No       | `86400` |
-| `FCM_PROJECT_ID`                 | Firebase project ID              | No\*     | -       |
-| `FCM_SERVICE_ACCOUNT_JSON`       | Firebase service account JSON    | No\*     | -       |
+| Variable                         | Description                                 | Required | Default |
+| -------------------------------- | ------------------------------------------- | -------- | ------- |
+| `DATABASE_URL`                   | PostgreSQL connection string                | Yes      | -       |
+| `REDIS_URL`                      | Redis connection string                     | Yes      | -       |
+| `SECRET_KEY`                     | JWT secret for user sessions                | Yes      | -       |
+| `ADMIN_JWT_SECRET`               | JWT secret for admin sessions               | Yes      | -       |
+| `ADMIN_INITIAL_USERNAME`         | Initial admin username                      | No       | `admin` |
+| `ADMIN_INITIAL_PASSWORD`         | Initial admin password                      | Yes      | -       |
+| `ALLOWED_ORIGINS`                | CORS allowed origins                        | Yes      | -       |
+| `USER_JWT_SECRET`                | JWT secret for user tokens                  | Yes      | -       |
+| `USER_JWT_ACCESS_EXPIRE_MINUTES` | User access token expiry (mins)             | No       | `30`    |
+| `USER_JWT_REFRESH_EXPIRE_DAYS`   | User refresh token expiry (days)            | No       | `30`    |
+| `TRUSTED_PROXIES`                | Trusted proxy IPs/CIDRs for X-Forwarded-For | No       | -       |
+| `LOG_LEVEL`                      | Logging level                               | No       | `INFO`  |
+| `SCHEDULE_INTERVAL_SECONDS`      | Question scheduling interval                | No       | `86400` |
+| `FCM_PROJECT_ID`                 | Firebase project ID                         | No\*     | -       |
+| `FCM_SERVICE_ACCOUNT_JSON`       | Firebase service account JSON               | No\*     | -       |
 
 \*Required only if push notifications are enabled
 
