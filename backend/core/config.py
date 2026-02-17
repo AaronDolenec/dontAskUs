@@ -102,3 +102,18 @@ SCHEDULE_INTERVAL_SECONDS = int(os.getenv("SCHEDULE_INTERVAL_SECONDS", "86400"))
 
 # ============= Logging =============
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+# ============= SMTP (Email) =============
+SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "").strip()
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "").strip()
+SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "DontAskUs").strip()
+SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "false").strip().lower() in ("true", "1", "yes")
+PASSWORD_RESET_EXPIRE_MINUTES = 15
+
+if SMTP_HOST:
+    _logger.info("SMTP configured: %s:%s (TLS=%s)", SMTP_HOST, SMTP_PORT, SMTP_USE_TLS)
+else:
+    _logger.info("SMTP not configured — password reset emails will not be sent")

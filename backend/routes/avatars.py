@@ -22,7 +22,7 @@ limiter = Limiter(key_func=get_remote_address)
 async def upload_avatar(request: Request, user_id: str, file: UploadFile = File(...), db=Depends(get_db)):
     """Upload a profile avatar image (max 2MB, auto-resized to 256x256 WebP)."""
     user = get_user_from_request(request, db, user_id=user_id)
-    if not user or user.user_id != user_id:
+    if not user:
         raise HTTPException(status_code=401, detail="Invalid authentication")
 
     file_bytes = await file.read()
@@ -77,7 +77,7 @@ async def upload_avatar(request: Request, user_id: str, file: UploadFile = File(
 async def delete_avatar(request: Request, user_id: str, db=Depends(get_db)):
     """Delete profile avatar and revert to color-based avatar."""
     user = get_user_from_request(request, db, user_id=user_id)
-    if not user or user.user_id != user_id:
+    if not user:
         raise HTTPException(status_code=401, detail="Invalid authentication")
     if not user.avatar_filename:
         raise HTTPException(status_code=404, detail="No avatar to delete")

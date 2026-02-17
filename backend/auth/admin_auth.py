@@ -4,6 +4,7 @@ Handles instance admin login, token generation, and session management.
 """
 
 import ipaddress
+import secrets
 
 import jwt
 import pyotp
@@ -25,8 +26,8 @@ from core.database import get_db
 from core.models import AdminUser, AuditLog
 from .utils import hash_password, verify_password
 
-# Bearer token scheme
-security = HTTPBearer()
+# Bearer token scheme — auto_error=False so we return 401 (not 403) when missing
+security = HTTPBearer(auto_error=False)
 
 
 class AdminAuthError(Exception):
@@ -40,7 +41,8 @@ def generate_temp_token(admin_id: int) -> str:
         "sub": f"admin_{admin_id}",
         "type": "temp",
         "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
-        "iat": datetime.now(timezone.utc)
+        "iat": datetime.now(timezone.utc),
+        "jti": secrets.token_urlsafe(16),
     }
     return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
@@ -65,7 +67,8 @@ def generate_access_token(admin_id: int) -> str:
         "sub": f"admin_{admin_id}",
         "type": "access",
         "exp": datetime.now(timezone.utc) + timedelta(minutes=ADMIN_JWT_EXPIRY_MINUTES),
-        "iat": datetime.now(timezone.utc)
+        "iat": datetime.now(timezone.utc),
+        "jti": secrets.token_urlsafe(16),
     }
     return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
@@ -76,7 +79,8 @@ def generate_refresh_token(admin_id: int) -> str:
         "sub": f"admin_{admin_id}",
         "type": "refresh",
         "exp": datetime.now(timezone.utc) + timedelta(days=ADMIN_REFRESH_EXPIRY_DAYS),
-        "iat": datetime.now(timezone.utc)
+        "iat": datetime.now(timezone.utc),
+        "jti": secrets.token_urlsafe(16),
     }
     return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
@@ -186,6 +190,12 @@ def log_admin_action(
 
 def get_current_admin(credentials = Depends(security), db: Session = Depends(get_db)) -> AdminUser:
     """Dependency to get current authenticated admin from JWT token"""
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     token = credentials.credentials
     
     try:

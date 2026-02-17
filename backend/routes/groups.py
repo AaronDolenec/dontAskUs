@@ -25,9 +25,9 @@ limiter = Limiter(key_func=get_remote_address)
 @limiter.limit("200/minute")
 def get_group_by_code(
     request: Request, invite_code: str,
-    account: Account = Depends(get_current_account), db: Session = Depends(get_db),
+    db: Session = Depends(get_db),
 ):
-    """Get group info by invite code (for joining). Requires authentication."""
+    """Get group info by invite code (for joining). Public endpoint."""
     group = db.query(Group).filter(Group.invite_code == invite_code).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")

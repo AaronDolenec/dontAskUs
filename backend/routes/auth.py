@@ -1,6 +1,7 @@
-"""User authentication routes: register, login, refresh, /me, change-password, join/create group."""
+"""User authentication routes: register, login, refresh, /me, change-password, forgot/reset password, join/create group."""
 
 import logging
+import secrets
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -9,15 +10,17 @@ from slowapi.util import get_remote_address
 from sqlalchemy import func, and_
 from sqlalchemy.orm import Session
 
-from core.config import USER_JWT_ACCESS_EXPIRE_MINUTES, MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES
+from core.config import USER_JWT_ACCESS_EXPIRE_MINUTES, MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES, PASSWORD_RESET_EXPIRE_MINUTES
 from core.database import get_db
-from core.models import Account, User, Group, QuestionSet, GroupQuestionSet
+from core.models import Account, User, Group, QuestionSet, GroupQuestionSet, PasswordResetToken
 from core.schemas import (
     AuthRegisterRequest, AuthLoginRequest, AuthTokenResponse, AuthRefreshRequest,
     AccountResponse, AccountGroupMembership, AccountMeResponse,
     UserChangePasswordRequest, JoinGroupRequest, GroupCreate,
+    ForgotPasswordRequest, ResetPasswordRequest,
 )
 from scripts.seed_defaults import initialize_default_question_set
+from services.email import send_password_reset_email, is_smtp_configured
 from auth.utils import (
     hash_password, verify_password, create_user_jwt, verify_user_jwt,
     get_current_account, get_avatar_url, get_random_avatar_color,
@@ -174,6 +177,90 @@ def change_password(
     db.commit()
     logging.info(f"Password changed for account {account.account_id}")
     return {"message": "Password changed successfully"}
+
+
+@router.post("/forgot-password")
+@limiter.limit("5/minute")
+def forgot_password(request: Request, body: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """Request a password reset code. A 6-digit code is sent to the email address.
+    
+    Always returns 200 regardless of whether the email exists to prevent
+    email enumeration. If SMTP is not configured, the code is logged at
+    WARNING level for development/debugging.
+    """
+    account = db.query(Account).filter(func.lower(Account.email) == body.email.lower()).first()
+
+    if not account:
+        # Don't reveal whether the email exists
+        return {"message": "If an account with that email exists, a reset code has been sent."}
+
+    # Invalidate any existing unused tokens for this account
+    db.query(PasswordResetToken).filter(
+        PasswordResetToken.account_id == account.id,
+        PasswordResetToken.used_at.is_(None),
+    ).update({"used_at": datetime.now(timezone.utc)})
+
+    # Generate a 6-digit numeric code
+    code = "".join([str(secrets.randbelow(10)) for _ in range(6)])
+    token_hash = hash_password(code)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=PASSWORD_RESET_EXPIRE_MINUTES)
+
+    reset_token = PasswordResetToken(
+        account_id=account.id,
+        token_hash=token_hash,
+        expires_at=expires_at,
+    )
+    db.add(reset_token)
+    db.commit()
+
+    # Send the email (or log the code if SMTP is not configured)
+    if is_smtp_configured():
+        send_password_reset_email(account.email, code)
+    else:
+        logging.warning(
+            "SMTP not configured — password reset code for %s: %s (expires in %d min)",
+            account.email, code, PASSWORD_RESET_EXPIRE_MINUTES,
+        )
+
+    logging.info(f"Password reset requested for {account.account_id}")
+    return {"message": "If an account with that email exists, a reset code has been sent."}
+
+
+@router.post("/reset-password")
+@limiter.limit("10/minute")
+def reset_password(request: Request, body: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """Reset the account password using a code received via email."""
+    account = db.query(Account).filter(func.lower(Account.email) == body.email.lower()).first()
+    if not account:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset code")
+
+    # Find valid (unused, non-expired) tokens for this account, newest first
+    tokens = db.query(PasswordResetToken).filter(
+        PasswordResetToken.account_id == account.id,
+        PasswordResetToken.used_at.is_(None),
+        PasswordResetToken.expires_at > datetime.now(timezone.utc),
+    ).order_by(PasswordResetToken.created_at.desc()).all()
+
+    matched = False
+    for token in tokens:
+        if verify_password(body.token, token.token_hash):
+            token.used_at = datetime.now(timezone.utc)
+            matched = True
+            break
+
+    if not matched:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset code")
+
+    # Update the password
+    account.password_hash = hash_password(body.new_password)
+    account.updated_at = datetime.now(timezone.utc)
+    # Clear any lockout
+    account.login_attempt_count = 0
+    account.is_locked_until = None
+    db.commit()
+
+    logging.info(f"Password reset completed for {account.account_id}")
+    return {"message": "Password has been reset successfully. You can now log in with your new password."}
 
 
 @router.post("/groups/join", response_model=AccountGroupMembership)

@@ -18,7 +18,7 @@ from core.models import (
 from core.schemas import DailyQuestionResponse, AnswerSubmissionCreate
 from auth.utils import (
     get_group_by_id, get_user_for_group,
-    get_option_counts, get_user_vote,
+    get_option_counts, get_user_vote, get_text_answers,
     get_user_group_streak, update_user_group_streak, normalize_answer_submission,
     get_avatar_url,
 )
@@ -53,6 +53,11 @@ def get_todays_question(request: Request, group_id: str = PathParam(...), db: Se
     user_streak = user.answer_streak
     longest_streak = user.longest_answer_streak
 
+    # For free_text questions, include all text answers so users can see what everyone wrote
+    text_answers = None
+    if question.question_type == QuestionTypeEnum.FREE_TEXT:
+        text_answers = get_text_answers(question.id, db)
+
     return DailyQuestionResponse(
         id=question.id, question_id=question.question_id,
         question_text=question.question_text, question_type=question.question_type,
@@ -60,6 +65,7 @@ def get_todays_question(request: Request, group_id: str = PathParam(...), db: Se
         question_date=question.question_date, is_active=question.is_active,
         total_votes=total_votes, allow_multiple=question.allow_multiple,
         user_vote=user_vote, user_streak=user_streak, longest_streak=longest_streak,
+        text_answers=text_answers,
     )
 
 
@@ -129,13 +135,16 @@ def submit_answer(
     user_answer_value = answer.text_answer if question.question_type == QuestionTypeEnum.FREE_TEXT else (
         normalized_answers if allow_multiple else normalized_answers[0]
     )
-    return {
+    response = {
         "success": True, "question_type": question.question_type.value,
         "vote_count_a": vote_count_a, "vote_count_b": vote_count_b,
         "total_votes": total_votes, "option_counts": option_counts,
         "options": options_list, "user_answer": user_answer_value,
         "current_streak": streak.current_streak, "longest_streak": streak.longest_streak,
     }
+    if question.question_type == QuestionTypeEnum.FREE_TEXT:
+        response["text_answers"] = get_text_answers(question.id, db)
+    return response
 
 
 @router.get("/groups/{group_id}/questions/history")
@@ -162,7 +171,8 @@ def get_question_history(
         opts = json.loads(q.options) if q.options else []
         oc = get_option_counts(q.id, db)
         tv = db.query(func.count(Vote.id)).filter(Vote.question_id == q.id).scalar() or 0
-        result.append({
+        user_vote = get_user_vote(user.id, q.id, db)
+        entry = {
             "question_id": q.question_id, "question_text": q.question_text,
             "question_type": q.question_type.value,
             "option_a": q.option_a, "option_b": q.option_b,
@@ -171,7 +181,11 @@ def get_question_history(
             "vote_count_a": oc.get(opts[0], 0) if opts else 0,
             "vote_count_b": oc.get(opts[1], 0) if len(opts) > 1 else 0,
             "total_votes": tv, "allow_multiple": getattr(q, "allow_multiple", False),
-        })
+            "user_vote": user_vote,
+        }
+        if q.question_type == QuestionTypeEnum.FREE_TEXT:
+            entry["text_answers"] = get_text_answers(q.id, db)
+        result.append(entry)
     return {"group_id": group_id, "total_count": total_count, "skip": skip, "limit": limit, "questions": result}
 
 

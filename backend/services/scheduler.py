@@ -131,19 +131,21 @@ def _build_daily_question(db, group, tmpl):
 
 # ============= Public API =============
 
-def create_today_question_for_group(db, group):
+def create_today_question_for_group(db, group, exclude_template_ids: set | None = None):
     """
     Create today's daily question for a single group (on-demand).
     Returns the DailyQuestion or None.
     Retries with different templates if the first pick is incompatible with group size.
+    exclude_template_ids: optional set of template IDs to skip (e.g. the just-deleted question).
     """
     today = datetime.now(timezone.utc).date()
     if existing := db.query(DailyQuestion).filter(
-        and_(DailyQuestion.group_id == group.id, func.date(DailyQuestion.question_date) == today)
+        and_(DailyQuestion.group_id == group.id, func.date(DailyQuestion.question_date) == today,
+             DailyQuestion.is_active == True)
     ).first():
         return existing
 
-    tried: set[int] = set()
+    tried: set[int] = set(exclude_template_ids) if exclude_template_ids else set()
     for _ in range(20):  # max attempts to find a compatible template
         tmpl, _ = _select_template(db, group, tried)
         if not tmpl:

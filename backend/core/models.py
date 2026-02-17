@@ -178,7 +178,6 @@ class User(Base):
 class DailyQuestion(Base):
     __tablename__ = "daily_questions"
     __table_args__ = (
-        UniqueConstraint('group_id', 'question_date', name='uq_group_date'),
         Index('idx_group_date', 'group_id', 'question_date'),
     )
     
@@ -380,4 +379,18 @@ class ApiRequestLog(Base):
     account_id = Column(Integer, nullable=True)  # Resolved from JWT if present
     request_body_preview = Column(Text, nullable=True)  # First 2000 chars
     response_size = Column(Integer, nullable=True)  # Response body size in bytes
+
+
+class PasswordResetToken(Base):
+    """Stores hashed password-reset tokens with expiry."""
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(Integer, primary_key=True)
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)
+    token_hash = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+
+    account = relationship("Account")
 

@@ -110,6 +110,31 @@ class UserChangePasswordRequest(BaseModel):
         return v
 
 
+class ForgotPasswordRequest(BaseModel):
+    """Request to initiate a password reset. Sends a reset code via email."""
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    """Request to reset a password using a code received via email."""
+    email: EmailStr
+    token: str = Field(..., min_length=6, max_length=6, description="6-digit reset code from email")
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator('new_password')
+    @classmethod
+    def validate_new_password(cls, v):
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters')
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'[0-9]', v):
+            raise ValueError('Password must contain at least one digit')
+        return v
+
+
 class JoinGroupRequest(BaseModel):
     """Request to join a group (authenticated user)."""
     invite_code: str = Field(..., min_length=1, max_length=10)
@@ -252,6 +277,7 @@ class DailyQuestionResponse(BaseModel):
     allow_multiple: bool = False
     user_vote: Optional[Union[str, List[str]]] = None
     user_text_answer: Optional[str] = None
+    text_answers: Optional[List[dict]] = None  # [{"display_name": "...", "text_answer": "..."}] for free_text
     user_streak: int = 0
     longest_streak: int = 0
     # Deprecated fields (kept for backward compatibility):

@@ -44,7 +44,10 @@ def verify_password(password: str, hashed: str) -> bool:
 # ============= User JWT Functions =============
 
 def create_user_jwt(account_id: int, token_type: str = "access") -> str:
-    """Create a JWT token for user authentication."""
+    """Create a JWT token for user authentication.
+    
+    Includes jti (JWT ID) for token uniqueness and future revocation support.
+    """
     now = datetime.now(timezone.utc)
     if token_type == "access":
         exp = now + timedelta(minutes=USER_JWT_ACCESS_EXPIRE_MINUTES)
@@ -55,6 +58,7 @@ def create_user_jwt(account_id: int, token_type: str = "access") -> str:
         "type": token_type,
         "exp": exp,
         "iat": now,
+        "jti": secrets.token_urlsafe(16),
     }
     return jwt.encode(payload, USER_JWT_SECRET, algorithm=USER_JWT_ALGO)
 
@@ -121,11 +125,20 @@ def get_user_from_request(
             account = db.query(Account).filter(Account.id == account_id_int, Account.is_active == True).first()
             if account:
                 if user_id:
+                    # First try: user_id is a per-group membership UUID
                     specific = db.query(User).filter(
                         and_(User.account_id == account.id, User.user_id == user_id)
                     ).first()
                     if specific:
                         return specific
+                    # Second try: user_id might be the account UUID —
+                    # return any membership so the caller can verify
+                    if user_id == str(account.account_id):
+                        first_membership = db.query(User).filter(User.account_id == account.id).first()
+                        if first_membership:
+                            return first_membership
+                    # user_id was provided but didn't match — don't fall through
+                    return None
                 memberships = db.query(User).filter(User.account_id == account.id).all()
                 if memberships:
                     return memberships[0]
@@ -379,6 +392,19 @@ def get_user_vote(user_id: int, question_id: int, db: Session) -> Optional[str]:
     return parse_vote_answer(vote.answer)
 
 
+def get_text_answers(question_id: int, db: Session) -> list[dict]:
+    """Get all free-text answers for a question with display names."""
+    from core.models import Vote, User
+    votes = (
+        db.query(Vote.text_answer, User.display_name)
+        .join(User, Vote.user_id == User.id)
+        .filter(Vote.question_id == question_id, Vote.text_answer.isnot(None))
+        .order_by(Vote.voted_at)
+        .all()
+    )
+    return [{"display_name": v.display_name, "text_answer": v.text_answer} for v in votes]
+
+
 # ============= Streak Helpers =============
 
 def get_user_group_streak(user_id: int, group_id: int, db: Session):
@@ -413,6 +439,14 @@ def update_user_group_streak(user_id: int, group_id: int, db: Session):
     if streak.current_streak > streak.longest_streak:
         streak.longest_streak = streak.current_streak
     streak.last_answer_date = datetime.now(timezone.utc)
+
+    # Sync streak values back to the User model so leaderboard/question reads are up to date
+    user = db.query(User).filter(User.id == user_id).first()
+    if user:
+        user.answer_streak = streak.current_streak
+        user.longest_answer_streak = streak.longest_streak
+        user.last_answer_date = streak.last_answer_date
+
     db.commit()
 
 

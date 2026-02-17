@@ -201,6 +201,17 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+    # Prevent browsers from caching auth responses (tokens, credentials)
+    auth_paths = {
+        "/api/auth/register", "/api/auth/login", "/api/auth/refresh",
+        "/api/auth/change-password", "/api/auth/forgot-password", "/api/auth/reset-password",
+        "/api/admin/login", "/api/admin/login/verify",
+        "/api/admin/refresh", "/api/admin/change-password",
+    }
+    if request.url.path in auth_paths:
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
     # Swagger UI needs 'unsafe-inline' for scripts because get_swagger_ui_html
     # injects inline <script> blocks to initialise SwaggerUIBundle.
     if request.url.path in ("/docs", "/openapi.json", "/swagger-ui-dark.css"):
@@ -292,6 +303,71 @@ body { background: #0b1220; }
     background: #0b1220; color: #e2e8f0; border: 1px solid #1f2937;
 }
 .swagger-ui input::placeholder, .swagger-ui textarea::placeholder { color: #94a3b8; }
+
+/* ---- Authorize dialog / modal ---- */
+.swagger-ui .dialog-ux .modal-ux {
+    background: #0f172a; border: 1px solid #1f2937;
+}
+.swagger-ui .dialog-ux .modal-ux-header {
+    border-bottom: 1px solid #1f2937;
+}
+.swagger-ui .dialog-ux .modal-ux-header h3 {
+    color: #f8fafc !important;
+}
+.swagger-ui .dialog-ux .modal-ux-content {
+    color: #e2e8f0 !important;
+}
+.swagger-ui .dialog-ux .modal-ux-content p,
+.swagger-ui .dialog-ux .modal-ux-content label,
+.swagger-ui .dialog-ux .modal-ux-content h4,
+.swagger-ui .dialog-ux .modal-ux-content code {
+    color: #e2e8f0 !important;
+}
+.swagger-ui .dialog-ux .modal-ux-content .auth-container {
+    border-color: #1f2937;
+}
+.swagger-ui .dialog-ux .modal-ux-content input[type="text"],
+.swagger-ui .dialog-ux .modal-ux-content input[type="password"] {
+    background: #0b1220; color: #f8fafc; border: 1px solid #374151;
+    padding: 8px; border-radius: 4px;
+}
+.swagger-ui .dialog-ux .modal-ux-content input[type="text"]:focus,
+.swagger-ui .dialog-ux .modal-ux-content input[type="password"]:focus {
+    border-color: #22d3ee; outline: none; box-shadow: 0 0 0 2px rgba(34,211,238,0.2);
+}
+.swagger-ui .auth-btn-wrapper {
+    display: flex; justify-content: center; gap: 8px;
+}
+.swagger-ui .auth-btn-wrapper .btn-done {
+    background: #374151; color: #e2e8f0; border: 1px solid #4b5563;
+}
+.swagger-ui .auth-btn-wrapper .btn-done:hover { background: #4b5563; }
+.swagger-ui .dialog-ux .modal-ux-content .btn.authorize {
+    background: #22c55e; color: #0b1220; border: none;
+}
+.swagger-ui .dialog-ux .modal-ux-content .btn.authorize:hover { background: #16a34a; }
+.swagger-ui .dialog-ux .modal-ux-content .btn.authorize svg { fill: #0b1220; }
+.swagger-ui .auth-container .wrapper { border-bottom-color: #1f2937; }
+.swagger-ui .auth-container h4 code { color: #67e8f9 !important; }
+.swagger-ui .dialog-ux .modal-ux .close-modal {
+    fill: #94a3b8;
+}
+.swagger-ui .dialog-ux .modal-ux .close-modal:hover { fill: #f8fafc; }
+.swagger-ui .dialog-ux .backdrop-ux { background: rgba(0,0,0,0.7); }
+.swagger-ui .auth-container .errors { color: #ef4444 !important; }
+.swagger-ui .dialog-ux .modal-ux-content .markdown code {
+    background: #111827; color: #67e8f9 !important;
+}
+.swagger-ui .btn.modal-btn { background: #22d3ee; color: #0b1220; border: none; }
+.swagger-ui .btn.modal-btn:hover { background: #0ea5e9; }
+.swagger-ui .btn.modal-btn.auth { background: #22c55e; color: #0b1220; }
+.swagger-ui .btn.modal-btn.auth:hover { background: #16a34a; }
+
+/* ---- Loading indicator and misc ---- */
+.swagger-ui .loading-container { background: #0b1220; }
+.swagger-ui .loading-container .loading::after { color: #e2e8f0; }
+.swagger-ui section.models { border-color: #1f2937; }
+.swagger-ui section.models h4 { color: #f8fafc !important; }
 """
 
 

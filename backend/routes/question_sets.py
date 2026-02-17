@@ -78,9 +78,9 @@ def create_question_set(
 
 @router.get("/question-sets")
 def list_public_question_sets(
-    account: Account = Depends(get_current_account), db: Session = Depends(get_db),
+    db: Session = Depends(get_db),
 ):
-    """List all public question sets. Requires authentication."""
+    """List all public question sets. Public endpoint."""
     sets = db.query(QuestionSet).filter(QuestionSet.is_public == True).all()
     return [
         {
@@ -95,9 +95,9 @@ def list_public_question_sets(
 @router.get("/question-sets/{set_id}")
 def get_question_set(
     set_id: str,
-    account: Account = Depends(get_current_account), db: Session = Depends(get_db),
+    db: Session = Depends(get_db),
 ):
-    """Get a single question set by ID. Requires authentication."""
+    """Get a single question set by ID. Public endpoint."""
     qs = db.query(QuestionSet).filter(QuestionSet.set_id == set_id).first()
     if not qs:
         raise HTTPException(status_code=404, detail="Question set not found")

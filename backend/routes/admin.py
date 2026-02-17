@@ -212,7 +212,7 @@ async def totp_setup_verify(
 @router.post("/totp/setup")
 async def setup_totp(admin: AdminUser = Depends(get_current_admin), db: Session = Depends(get_db)):
     """Generate a new TOTP secret."""
-    from admin_auth import get_totp_secret
+    from auth.admin_auth import get_totp_secret
     totp_secret = get_totp_secret()
     totp = pyotp.TOTP(totp_secret)
     return {
@@ -752,7 +752,7 @@ async def admin_set_today_question(
     group_id: int, admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db), x_forwarded_for: str = Header(None), request_obj: Request = None,
 ):
-    """Regenerate today's question for a group (instance admin only). Deletes old question + votes for today."""
+    """Regenerate today's question for a group (instance admin only). Deactivates old question, preserving history."""
     from services.scheduler import create_today_question_for_group
     import json as _json
 
@@ -761,15 +761,17 @@ async def admin_set_today_question(
         raise HTTPException(status_code=404, detail="Group not found")
 
     today = datetime.now(timezone.utc).date()
+    old_template_id = None
     old_q = db.query(DailyQuestion).filter(
-        and_(DailyQuestion.group_id == group.id, func.date(DailyQuestion.question_date) == today)
+        and_(DailyQuestion.group_id == group.id, func.date(DailyQuestion.question_date) == today,
+             DailyQuestion.is_active == True)
     ).first()
     if old_q:
-        db.query(Vote).filter(Vote.question_id == old_q.id).delete(synchronize_session=False)
-        db.delete(old_q)
+        old_template_id = old_q.template_id
+        old_q.is_active = False
         db.commit()
 
-    dq = create_today_question_for_group(db, group)
+    dq = create_today_question_for_group(db, group, exclude_template_ids={old_template_id} if old_template_id else None)
     if not dq:
         raise HTTPException(status_code=400, detail="Unable to generate question (not enough members or templates)")
 
@@ -793,24 +795,24 @@ async def admin_reset_question_cycle(
     group_id: int, admin: AdminUser = Depends(get_current_admin),
     db: Session = Depends(get_db), x_forwarded_for: str = Header(None), request_obj: Request = None,
 ):
-    """Reset question cycle for a group (instance admin only). Clears all past questions."""
+    """Reset question cycle for a group (instance admin only). Clears template tracking so all templates become available again. Preserves question history."""
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
 
-    question_ids = [q.id for q in db.query(DailyQuestion.id).filter(DailyQuestion.group_id == group.id).all()]
-    if question_ids:
-        db.query(Vote).filter(Vote.question_id.in_(question_ids)).delete(synchronize_session=False)
-    deleted_count = db.query(DailyQuestion).filter(DailyQuestion.group_id == group.id).delete()
+    # Clear template_id on all past questions so _select_template sees them as unused
+    reset_count = db.query(DailyQuestion).filter(
+        DailyQuestion.group_id == group.id, DailyQuestion.template_id.isnot(None)
+    ).update({DailyQuestion.template_id: None}, synchronize_session=False)
     db.commit()
 
     ip_address = extract_client_ip(request_obj, x_forwarded_for)
     log_admin_action(admin_id=admin.id, action="RESET_QUESTION_CYCLE", target_type="GROUP",
                      target_id=group_id, before_state=None,
-                     after_state={"deleted_count": deleted_count},
+                     after_state={"reset_count": reset_count},
                      ip_address=ip_address, reason="Admin reset question cycle", db=db)
-    logging.info(f"Question cycle reset for group {group.group_id}. Deleted {deleted_count} questions.")
-    return {"group_id": group.group_id, "message": f"Question cycle reset. {deleted_count} questions deleted.", "deleted_count": deleted_count}
+    logging.info(f"Question cycle reset for group {group.group_id}. Reset {reset_count} template references.")
+    return {"group_id": group.group_id, "message": f"Question cycle reset. {reset_count} template references cleared.", "reset_count": reset_count}
 
 
 # ============= Question Set Management =============

@@ -139,7 +139,7 @@ check "GET /api/admin/profile (authenticated)" "200" "$code" "$body"
 resp=$(req GET "$BASE/api/admin/profile")
 code=$(echo "$resp" | head -1)
 body=$(echo "$resp" | tail -n +2)
-check "GET /api/admin/profile (no auth)" "403" "$code" "$body"
+check "GET /api/admin/profile (no auth)" "401" "$code" "$body"
 
 # ════════════════════════════════════════════════════════════
 echo ""
@@ -159,7 +159,7 @@ echo -e "    ${CYAN}POST /api/admin/account/change-password${NC}"
 resp=$(req POST "$BASE/api/admin/account/change-password" \
   -H "Authorization: Bearer $ADMIN_ACCESS" \
   -H "Content-Type: application/json" \
-  -d '{"current_password":"wrongpass","new_password":"NewPass1234"}')
+  -d '{"current_password":"wrongpass","new_password":"NewPass1234!"}')
 code=$(echo "$resp" | head -1)
 body=$(echo "$resp" | tail -n +2)
 check "POST /api/admin/account/change-password (wrong current)" "400" "$code" "$body"
@@ -336,6 +336,46 @@ req POST "$BASE/api/auth/change-password" \
 
 # ════════════════════════════════════════════════════════════
 echo ""
+echo -e "    ${CYAN}POST /api/auth/forgot-password${NC}"
+# ════════════════════════════════════════════════════════════
+# Existing email — should return 200 (always, to prevent enumeration)
+resp=$(req POST "$BASE/api/auth/forgot-password" \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"test_${TIMESTAMP}@example.com\"}")
+code=$(echo "$resp" | head -1)
+body=$(echo "$resp" | tail -n +2)
+check "POST /api/auth/forgot-password (existing email)" "200" "$code" "$body"
+
+# Non-existent email — should also return 200
+resp=$(req POST "$BASE/api/auth/forgot-password" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"nonexistent@example.com"}')
+code=$(echo "$resp" | head -1)
+body=$(echo "$resp" | tail -n +2)
+check "POST /api/auth/forgot-password (unknown email)" "200" "$code" "$body"
+
+# ════════════════════════════════════════════════════════════
+echo ""
+echo -e "    ${CYAN}POST /api/auth/reset-password${NC}"
+# ════════════════════════════════════════════════════════════
+# Invalid/wrong code — should return 400
+resp=$(req POST "$BASE/api/auth/reset-password" \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"test_${TIMESTAMP}@example.com\",\"token\":\"000000\",\"new_password\":\"ResetPass1\"}")
+code=$(echo "$resp" | head -1)
+body=$(echo "$resp" | tail -n +2)
+check "POST /api/auth/reset-password (invalid code)" "400" "$code" "$body"
+
+# Non-existent email
+resp=$(req POST "$BASE/api/auth/reset-password" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"nobody@example.com","token":"123456","new_password":"ResetPass1"}')
+code=$(echo "$resp" | head -1)
+body=$(echo "$resp" | tail -n +2)
+check "POST /api/auth/reset-password (unknown email)" "400" "$code" "$body"
+
+# ════════════════════════════════════════════════════════════
+echo ""
 echo -e "${BOLD}[4] Group Endpoints${NC}"
 echo -e "    ${CYAN}POST /api/groups (unauthenticated - should not exist)${NC}"
 # ════════════════════════════════════════════════════════════
@@ -489,6 +529,7 @@ echo ""
 echo -e "    ${CYAN}POST /api/question-sets${NC}"
 # ════════════════════════════════════════════════════════════
 resp=$(req POST "$BASE/api/question-sets" \
+  -H "Authorization: Bearer $USER_ACCESS" \
   -H "Content-Type: application/json" \
   -d "{\"name\":\"TestSet_${TIMESTAMP}\",\"is_public\":true}")
 code=$(echo "$resp" | head -1)
@@ -730,7 +771,7 @@ ADMIN_TARGET_USER_EMAIL=$(echo "$body" | python3 -c "import sys,json; d=json.loa
 resp=$(req GET "$BASE/api/admin/users" )
 code=$(echo "$resp" | head -1)
 body=$(echo "$resp" | tail -n +2)
-check "GET /api/admin/users (no auth)" "403" "$code" "$body"
+check "GET /api/admin/users (no auth)" "401" "$code" "$body"
 
 # ════════════════════════════════════════════════════════════
 echo ""

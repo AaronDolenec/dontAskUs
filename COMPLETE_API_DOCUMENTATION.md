@@ -93,6 +93,72 @@ The backend **automatically generates a new question for each group every day**:
 
 ---
 
+## Security Architecture
+
+### Transport Security
+
+- **HTTPS required in production** — passwords are transmitted in JSON request bodies, which are
+  encrypted by TLS in transit
+- HSTS header (`Strict-Transport-Security`) is automatically added when served over HTTPS
+- Auth endpoints return `Cache-Control: no-store, no-cache, must-revalidate` and `Pragma: no-cache`
+  to prevent browsers from caching tokens or credentials
+
+### Password Security
+
+- **Hashing:** bcrypt with automatic salt generation (server-side)
+- **Requirements:** Minimum 8 characters, at least one uppercase letter, lowercase letter, and digit
+- **Maximum length:** 128 characters (prevents bcrypt DoS via extremely long passwords)
+- **Timing-safe checks:** Failed logins always perform a dummy bcrypt comparison to prevent email
+  enumeration via response timing
+
+### JWT Security
+
+- **Separate secrets:** User and Admin JWT tokens use independent signing secrets (`USER_JWT_SECRET`
+  and `SECRET_KEY`)
+- **Algorithm:** HS256 (HMAC-SHA256)
+- **Claims:** All tokens include `sub`, `type`, `exp`, `iat`, and `jti` (JWT ID for
+  uniqueness/future revocation)
+- **Insecure default warnings:** Server logs loud warnings if JWT secrets are left at default values
+
+### Brute-Force Protection
+
+| Setting               | Users  | Admins |
+| --------------------- | ------ | ------ |
+| Max login attempts    | 10     | 5      |
+| Lockout duration      | 15 min | 30 min |
+| Rate limit (login)    | 10/min | 5/min  |
+| Rate limit (register) | 10/min | —      |
+
+### Security Headers
+
+All responses include:
+
+- `X-Content-Type-Options: nosniff`
+- `X-XSS-Protection: 1; mode=block`
+- `X-Frame-Options: DENY`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `Content-Security-Policy` (restricted to `self` + CDN for Swagger UI)
+- `Permissions-Policy: camera=(), microphone=(), geolocation=()`
+- `Strict-Transport-Security: max-age=31536000; includeSubDomains` (HTTPS only)
+
+### Reverse Proxy Support
+
+- Configure `TRUSTED_PROXIES` env var to trust `X-Forwarded-For` headers from specific IPs/CIDRs
+- Example: `TRUSTED_PROXIES=172.16.0.0/12` for Docker networks
+
+### Password Reset
+
+- Self-service password reset via email (6-digit code, 15 minute expiry)
+- Requires SMTP configuration (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`,
+  `SMTP_FROM_EMAIL` — see `.env.example`)
+- Reset codes are bcrypt-hashed before storage (same as passwords)
+- Requesting a new code invalidates all previous unused codes
+- Successful reset clears any account lockout
+- Endpoint always returns `200` regardless of email existence (prevents enumeration)
+- Without SMTP configured, the app still works but codes are logged at WARNING level
+
+---
+
 ## Authentication
 
 ### JWT Tokens (Users)
@@ -102,6 +168,7 @@ The backend **automatically generates a new question for each group every day**:
 - Access Token: `USER_JWT_ACCESS_EXPIRE_MINUTES` (default: 30 minutes)
 - Refresh Token: `USER_JWT_REFRESH_EXPIRE_DAYS` (default: 30 days)
 - Passed as `Authorization: Bearer <token>` header
+- All JWTs include a `jti` (JWT ID) claim for token uniqueness and future revocation support
 - Password requirements: min 8 chars, uppercase, lowercase, digit
 
 ### Group Creator Identification
@@ -115,6 +182,7 @@ The backend **automatically generates a new question for each group every day**:
 - Access Token: 60 minutes
 - Refresh Token: 7 days
 - Passed as `Authorization: Bearer <token>` header
+- All JWTs include a `jti` (JWT ID) claim for token uniqueness and future revocation support
 - TOTP 2FA optional (can be enabled in account settings)
 
 ---
@@ -133,7 +201,7 @@ Content-Type: application/json
 
 {
   "email": "alice@example.com",
-  "password": "SecurePass1",
+  "password": "SecurePass1!",
   "display_name": "Alice"
 }
 ```
@@ -173,7 +241,7 @@ Content-Type: application/json
 
 {
   "email": "alice@example.com",
-  "password": "SecurePass1"
+  "password": "SecurePass1!"
 }
 ```
 
@@ -286,8 +354,8 @@ Authorization: Bearer <access_token>
 Content-Type: application/json
 
 {
-  "current_password": "OldPass1",
-  "new_password": "NewPass1"
+  "current_password": "OldPass1!",
+  "new_password": "NewPass1!"
 }
 ```
 
@@ -303,6 +371,75 @@ Content-Type: application/json
 
 - `401`: Authorization header required / Invalid token / Incorrect current password
 - `400`: New password doesn't meet requirements (min 8 chars, uppercase, lowercase, digit)
+
+---
+
+### Forgot Password (Request Reset Code)
+
+**Authentication:** None (public endpoint)
+
+Request a password reset code. A 6-digit code is sent to the email address. Always returns `200`
+regardless of whether the email exists (prevents email enumeration).
+
+> **Note:** Requires SMTP to be configured (see `.env.example`). Without SMTP, the code is logged at
+> WARNING level for development/debugging.
+
+```http
+POST /api/auth/forgot-password
+Content-Type: application/json
+
+{
+  "email": "alice@example.com"
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "message": "If an account with that email exists, a reset code has been sent."
+}
+```
+
+**Rate limit:** 5/minute
+
+---
+
+### Reset Password (Use Reset Code)
+
+**Authentication:** None (public endpoint)
+
+Reset the account password using the 6-digit code received via email.
+
+```http
+POST /api/auth/reset-password
+Content-Type: application/json
+
+{
+  "email": "alice@example.com",
+  "token": "312863",
+  "new_password": "MyNewPass1"
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "message": "Password has been reset successfully. You can now log in with your new password."
+}
+```
+
+**Errors:**
+
+- `400`: Invalid or expired reset code
+- `422`: New password doesn't meet requirements (min 8 chars, uppercase, lowercase, digit)
+
+**Notes:**
+
+- Reset codes expire after 15 minutes
+- Only the most recent unused code is valid; requesting a new code invalidates previous ones
+- A successful reset also clears any account lockout
 
 ---
 
@@ -1374,8 +1511,8 @@ Authorization: Bearer <access_token>
 Content-Type: application/json
 
 {
-  "current_password": "oldPass123",
-  "new_password": "newStrongPass456"
+  "current_password": "oldPass123!",
+  "new_password": "newStrongPass456!"
 }
 ```
 
@@ -1389,7 +1526,8 @@ Content-Type: application/json
 
 **Errors:**
 
-- `400` Current password incorrect or new password too weak
+- `400` Current password incorrect
+- `422` New password too weak (min 8 chars, uppercase, lowercase, digit)
 
 ---
 
