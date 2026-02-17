@@ -23,7 +23,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.gzip import GZipMiddleware
 
-from core import ALLOWED_ORIGINS, AVATAR_UPLOAD_DIR, SCHEDULE_INTERVAL_SECONDS, LOG_LEVEL, engine, Base, SessionLocal
+from core import ALLOWED_ORIGINS, AVATAR_UPLOAD_DIR, SCHEDULE_INTERVAL_SECONDS, LOG_LEVEL, TRUSTED_PROXIES, engine, Base, SessionLocal
 from core.models import ApiRequestLog
 from services import background_scheduler
 from scripts import initialize_default_question_set, assign_default_set_to_unassigned_groups
@@ -153,7 +153,8 @@ async def api_request_logger(request: Request, call_next):
 
     # Log to DB (fire-and-forget)
     try:
-        client_ip = request.client.host if request.client else None
+        from auth.utils import extract_client_ip as _extract_ip
+        client_ip = _extract_ip(request)
         user_agent = request.headers.get("User-Agent", "")[:500]
         query_string = str(request.url.query)[:500] if request.url.query else None
 

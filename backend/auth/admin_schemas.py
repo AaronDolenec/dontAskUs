@@ -174,7 +174,7 @@ class AuditLogResponse(BaseModel):
     admin_id: int
     action: str
     target_type: str
-    target_id: Optional[int]
+    target_id: Optional[str]
     before_state: Optional[Dict[str, Any]]
     after_state: Optional[Dict[str, Any]]
     timestamp: datetime

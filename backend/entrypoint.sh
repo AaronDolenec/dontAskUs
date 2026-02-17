@@ -37,4 +37,12 @@ echo "Access the Admin UI at: http://localhost:5173/admin"
 echo "API Documentation: http://localhost:8000/docs"
 echo "════════════════════════════════════════════════════════════════════════════════"
 echo ""
-exec uvicorn main:app --host 0.0.0.0 --port 8000
+# If TRUSTED_PROXIES is set, enable uvicorn proxy-headers so it reads
+# X-Forwarded-For / X-Forwarded-Proto from trusted proxies.
+if [ -n "${TRUSTED_PROXIES:-}" ]; then
+    # Convert TRUSTED_PROXIES to uvicorn's --forwarded-allow-ips format
+    echo "Proxy mode enabled. Trusted proxies: ${TRUSTED_PROXIES}"
+    exec uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips "${TRUSTED_PROXIES}"
+else
+    exec uvicorn main:app --host 0.0.0.0 --port 8000
+fi

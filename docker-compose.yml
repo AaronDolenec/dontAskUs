@@ -69,6 +69,13 @@ services:
       LOG_LEVEL: INFO
 
       # ═══════════════════════════════════════════════════════════════════════
+      # REVERSE PROXY — Uncomment if running behind nginx/traefik/etc.
+      # This ensures real client IPs are logged instead of the proxy IP.
+      # Use '*' to trust all, or specify proxy IPs/CIDRs comma-separated.
+      # ═══════════════════════════════════════════════════════════════════════
+      # TRUSTED_PROXIES: "*"
+
+      # ═══════════════════════════════════════════════════════════════════════
       # PUSH NOTIFICATIONS (Optional) - Firebase Cloud Messaging
       # Get credentials from: Firebase Console -> Project Settings -> Service accounts
       # ═══════════════════════════════════════════════════════════════════════

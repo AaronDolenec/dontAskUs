@@ -261,21 +261,45 @@ def generate_duos(member_names: list[str], max_pairs: int = 5) -> list[str]:
 
 
 def extract_client_ip(request: Request, header_ip: Optional[str] = None) -> str:
-    """Extract real client IP from request, handling proxies and Docker."""
+    """Extract real client IP from request, respecting TRUSTED_PROXIES config.
+
+    When TRUSTED_PROXIES is configured, X-Forwarded-For header is trusted
+    and the leftmost (client) IP is returned. Otherwise, only request.client.host
+    is used for security.
+    """
     import ipaddress as _ipaddress
-    if header_ip:
-        raw_ip = header_ip.split(',')[0].strip()
-        try:
-            _ipaddress.ip_address(raw_ip)
-            return raw_ip
-        except ValueError:
-            pass  # Ignore malformed IP, fall through
-    if request and request.client:
-        ip = request.client.host
-        if ip and ip.startswith("172."):
-            return "docker"
-        return ip
-    return "unknown"
+    from core.config import TRUSTED_PROXIES
+
+    direct_ip = request.client.host if request and request.client else None
+
+    # Check if we should trust X-Forwarded-For
+    if TRUSTED_PROXIES:
+        forwarded_for = header_ip or (request.headers.get("X-Forwarded-For") if request else None)
+        if forwarded_for:
+            # Trust XFF if direct_ip is from a trusted proxy (or trust-all "*")
+            trust = "*" in TRUSTED_PROXIES
+            if not trust and direct_ip:
+                for proxy in TRUSTED_PROXIES:
+                    try:
+                        if "/" in proxy:
+                            trust = _ipaddress.ip_address(direct_ip) in _ipaddress.ip_network(proxy, strict=False)
+                        else:
+                            trust = direct_ip == proxy
+                    except ValueError:
+                        continue
+                    if trust:
+                        break
+
+            if trust:
+                # Leftmost IP in X-Forwarded-For is the original client
+                raw_ip = forwarded_for.split(",")[0].strip()
+                try:
+                    _ipaddress.ip_address(raw_ip)
+                    return raw_ip
+                except ValueError:
+                    pass  # Malformed, fall through to direct IP
+
+    return direct_ip or "unknown"
 
 
 # ============= Vote/Answer Helpers =============

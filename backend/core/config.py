@@ -81,6 +81,22 @@ AVATAR_MAGIC_BYTES = {
     b'RIFF': 'image/webp',
 }
 
+# ============= Reverse Proxy =============
+# Comma-separated list of trusted proxy IPs/CIDRs.
+# When set, X-Forwarded-For headers from these proxies are trusted
+# to determine the real client IP address.
+# Examples:
+#   TRUSTED_PROXIES=172.16.0.0/12           (Docker default bridge network)
+#   TRUSTED_PROXIES=10.0.0.1,172.18.0.0/16  (specific proxy + Docker network)
+#   TRUSTED_PROXIES=*                        (trust all — only if behind a known proxy)
+_raw_proxies = os.getenv("TRUSTED_PROXIES", "").strip()
+TRUSTED_PROXIES: list[str] = [p.strip() for p in _raw_proxies.split(",") if p.strip()] if _raw_proxies else []
+
+if TRUSTED_PROXIES:
+    _logger.info("Trusted proxies configured: %s", TRUSTED_PROXIES)
+else:
+    _logger.info("No trusted proxies configured — X-Forwarded-For headers will be ignored")
+
 # ============= Scheduler =============
 SCHEDULE_INTERVAL_SECONDS = int(os.getenv("SCHEDULE_INTERVAL_SECONDS", "86400"))
 
