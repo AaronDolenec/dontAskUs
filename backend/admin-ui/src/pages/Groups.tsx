@@ -70,6 +70,38 @@ export default function Groups() {
     }
   }
 
+  async function setTodayQuestion(groupId: number) {
+    if (!confirm('This will replace today\'s question (and its votes) for this group with a new one. Continue?')) return
+    try {
+      const res = await request(`/api/admin/groups/${groupId}/set-today-question`, { method: 'POST' })
+      if (res.ok) {
+        const data = await res.json()
+        alert(`New question set: "${data.question_text}"`)
+      } else {
+        const errData = await res.json()
+        alert('Error: ' + (errData.detail || 'Failed to set question'))
+      }
+    } catch (err: any) {
+      alert('Error: ' + err.message)
+    }
+  }
+
+  async function resetQuestionCycle(groupId: number) {
+    if (!confirm('This will delete ALL past questions and votes for this group, resetting the question cycle. Continue?')) return
+    try {
+      const res = await request(`/api/admin/groups/${groupId}/reset-question-cycle`, { method: 'POST' })
+      if (res.ok) {
+        const data = await res.json()
+        alert(data.message)
+      } else {
+        const errData = await res.json()
+        alert('Error: ' + (errData.detail || 'Failed to reset cycle'))
+      }
+    } catch (err: any) {
+      alert('Error: ' + err.message)
+    }
+  }
+
   async function createGroup() {
     if (!newGroupName.trim()) {
       alert('Please enter a group name')
@@ -142,6 +174,8 @@ export default function Groups() {
                   {g.instance_admin_notes || <span className="group-notes-empty">No notes</span>}
                 </td>
                 <td style={{ whiteSpace: 'nowrap' }}>
+                  <button onClick={() => setTodayQuestion(g.id)} style={{ marginRight: 4, padding: '4px 8px' }} title="Set new question for today">🔄 Question</button>
+                  <button onClick={() => resetQuestionCycle(g.id)} style={{ marginRight: 4, padding: '4px 8px' }} title="Reset question cycle">♻️ Reset</button>
                   <button onClick={() => updateNotes(g)} style={{ marginRight: 4, padding: '4px 8px' }}>Notes</button>
                   <button onClick={() => deleteGroup(g.id)} style={{ color: 'red', padding: '4px 8px' }}>Delete</button>
                 </td>

@@ -2,7 +2,7 @@
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from core.database import get_db
@@ -14,7 +14,7 @@ from core.schemas import (
     QuestionSetCreate, QuestionSetResponse, QuestionTemplateResponse,
     GroupQuestionSetsResponse, GroupAssignSetsRequest,
 )
-from auth.utils import get_group_by_id, require_group_admin, get_current_account
+from auth.utils import get_group_by_id, require_group_creator, get_current_account
 
 router = APIRouter(prefix="/api", tags=["Question Sets"])
 
@@ -110,11 +110,13 @@ def get_question_set(
 
 @router.post("/groups/{group_id}/question-sets")
 def assign_question_sets_to_group(
+    group_id: str,
     payload: GroupAssignSetsRequest,
-    group: Group = Depends(require_group_admin),
+    request: Request,
     db: Session = Depends(get_db),
 ):
-    """Assign question sets to a group. Requires group admin token."""
+    """Assign question sets to a group. Requires group creator (JWT)."""
+    group = require_group_creator(group_id, request, db)
     if payload.replace:
         db.query(GroupQuestionSet).filter(GroupQuestionSet.group_id == group.id).delete()
         db.commit()
@@ -145,7 +147,7 @@ def get_group_question_sets(
     account: Account = Depends(get_current_account), db: Session = Depends(get_db),
 ):
     """Get all question sets assigned to a group. Requires authentication and group membership."""
-    from utils import get_membership
+    from auth.utils import get_membership
     group = get_group_by_id(group_id, db)
     membership = get_membership(account, group.id, db)
     if not membership:

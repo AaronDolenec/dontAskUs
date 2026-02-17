@@ -21,7 +21,7 @@ from scripts.seed_defaults import initialize_default_question_set
 from auth.utils import (
     hash_password, verify_password, create_user_jwt, verify_user_jwt,
     get_current_account, get_avatar_url, get_random_avatar_color,
-    generate_invite_code, generate_admin_token, hash_token,
+    generate_invite_code,
     generate_qr_code,
 )
 
@@ -215,13 +215,11 @@ def create_group_authenticated(
     request: Request, group: GroupCreate,
     account: Account = Depends(get_current_account), db: Session = Depends(get_db),
 ):
-    """Create a new group (authenticated). Auto-joins the creator."""
+    """Create a new group (authenticated). Auto-joins the creator and assigns today's question."""
     invite_code = generate_invite_code()
-    admin_token_plaintext = generate_admin_token()
-    admin_token_hash = hash_token(admin_token_plaintext)
     while db.query(Group).filter(Group.invite_code == invite_code).first():
         invite_code = generate_invite_code()
-    db_group = Group(name=group.name, invite_code=invite_code, admin_token=admin_token_hash)
+    db_group = Group(name=group.name, invite_code=invite_code)
     db.add(db_group)
     db.commit()
     db.refresh(db_group)
@@ -246,9 +244,15 @@ def create_group_authenticated(
             db.commit()
     except Exception:
         logging.exception("Failed to assign Default question set to new group")
+    # Auto-create today's daily question for the new group
+    try:
+        from services.scheduler import create_today_question_for_group
+        create_today_question_for_group(db, db_group)
+    except Exception:
+        logging.exception("Failed to auto-create today's question for new group")
     logging.info(f"Account {account.account_id} created group {db_group.group_id} ('{group.name}')")
     return {
         "id": db_group.id, "group_id": db_group.group_id, "name": db_group.name,
-        "invite_code": db_group.invite_code, "admin_token": admin_token_plaintext,
+        "invite_code": db_group.invite_code,
         "created_at": db_group.created_at.isoformat(), "member_count": 1,
     }

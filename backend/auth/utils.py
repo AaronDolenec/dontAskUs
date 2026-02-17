@@ -41,16 +41,6 @@ def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
 
-def hash_token(token: str) -> str:
-    """Hash a token using bcrypt for secure storage (alias for hash_password)."""
-    return hash_password(token)
-
-
-def verify_token(token: str, hashed_token: str) -> bool:
-    """Verify a plaintext token against its bcrypt hash (alias for verify_password)."""
-    return verify_password(token, hashed_token)
-
-
 # ============= User JWT Functions =============
 
 def create_user_jwt(account_id: int, token_type: str = "access") -> str:
@@ -180,11 +170,6 @@ def get_user_by_id(user_id: str, db: Session) -> User:
 def generate_invite_code() -> str:
     """Generate a unique 6-character invite code."""
     return ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
-
-
-def generate_admin_token() -> str:
-    """Generate a secure admin token."""
-    return secrets.token_urlsafe(32)
 
 
 def get_random_avatar_color() -> str:
@@ -340,7 +325,7 @@ def normalize_answer_submission(raw_answer, allow_multiple: bool) -> list[str]:
 
 def get_option_counts(question_id: int, db: Session) -> dict:
     """Aggregate counts per answer value, flattening multi-select payloads."""
-    from models import Vote
+    from core.models import Vote
     rows = db.query(Vote.answer).filter(Vote.question_id == question_id).all()
     counts: dict[str, int] = {}
     for (raw_answer,) in rows:
@@ -361,7 +346,7 @@ def get_option_counts(question_id: int, db: Session) -> dict:
 
 def get_user_vote(user_id: int, question_id: int, db: Session) -> Optional[str]:
     """Get user's vote answer for a question."""
-    from models import Vote
+    from core.models import Vote
     vote = db.query(Vote).filter(
         and_(Vote.question_id == question_id, Vote.user_id == user_id)
     ).first()
@@ -374,7 +359,7 @@ def get_user_vote(user_id: int, question_id: int, db: Session) -> Optional[str]:
 
 def get_user_group_streak(user_id: int, group_id: int, db: Session):
     """Get or create per-group streak record for a user."""
-    from models import UserGroupStreak
+    from core.models import UserGroupStreak
     streak = db.query(UserGroupStreak).filter(
         and_(UserGroupStreak.user_id == user_id, UserGroupStreak.group_id == group_id)
     ).first()
@@ -407,19 +392,31 @@ def update_user_group_streak(user_id: int, group_id: int, db: Session):
     db.commit()
 
 
-# ============= Group Admin Dependency =============
+# ============= Group Admin (Creator) Dependency =============
 
-def require_group_admin(
+def require_group_creator(
     group_id: str,
-    x_admin_token: Optional[str] = Header(None),
+    request: Request,
     db: Session = Depends(get_db),
 ):
-    """Dependency to ensure the caller is group admin via X-Admin-Token header."""
-    if not x_admin_token:
-        raise HTTPException(status_code=401, detail="Admin token required in 'X-Admin-Token' header")
+    """Dependency to ensure the caller is the group creator via JWT Bearer token."""
     group = db.query(Group).filter(Group.group_id == group_id).first()
     if not group:
-        raise HTTPException(status_code=401, detail="Invalid admin token")
-    if not verify_token(x_admin_token, group.admin_token):
-        raise HTTPException(status_code=401, detail="Invalid admin token")
+        raise HTTPException(status_code=404, detail="Group not found")
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authorization header required")
+    token = auth_header.split(" ", 1)[1]
+    account_id = verify_user_jwt(token, "access")
+    account = db.query(Account).filter(Account.id == account_id, Account.is_active == True).first()
+    if not account:
+        raise HTTPException(status_code=401, detail="Account not found or deactivated")
+    # Find user membership in this group
+    user = db.query(User).filter(
+        and_(User.account_id == account.id, User.group_id == group.id)
+    ).first()
+    if not user:
+        raise HTTPException(status_code=403, detail="You are not a member of this group")
+    if group.creator_id != user.id:
+        raise HTTPException(status_code=403, detail="Only the group creator can perform this action")
     return group

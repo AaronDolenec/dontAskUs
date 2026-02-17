@@ -135,6 +135,7 @@ def create_today_question_for_group(db, group):
     """
     Create today's daily question for a single group (on-demand).
     Returns the DailyQuestion or None.
+    Retries with different templates if the first pick is incompatible with group size.
     """
     today = datetime.now(timezone.utc).date()
     if existing := db.query(DailyQuestion).filter(
@@ -142,18 +143,21 @@ def create_today_question_for_group(db, group):
     ).first():
         return existing
 
-    tmpl, _ = _select_template(db, group)
-    if not tmpl:
-        return None
+    tried: set[int] = set()
+    for _ in range(20):  # max attempts to find a compatible template
+        tmpl, _ = _select_template(db, group, tried)
+        if not tmpl:
+            return None
+        tried.add(tmpl.id)
 
-    dq = _build_daily_question(db, group, tmpl)
-    if not dq:
-        return None
+        dq = _build_daily_question(db, group, tmpl)
+        if dq:
+            db.add(dq)
+            db.commit()
+            db.refresh(dq)
+            return dq
 
-    db.add(dq)
-    db.commit()
-    db.refresh(dq)
-    return dq
+    return None
 
 
 def _process_group_question(db, group, today, selected_today):

@@ -23,7 +23,8 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.gzip import GZipMiddleware
 
-from core import ALLOWED_ORIGINS, AVATAR_UPLOAD_DIR, SCHEDULE_INTERVAL_SECONDS, LOG_LEVEL, engine, Base
+from core import ALLOWED_ORIGINS, AVATAR_UPLOAD_DIR, SCHEDULE_INTERVAL_SECONDS, LOG_LEVEL, engine, Base, SessionLocal
+from core.models import ApiRequestLog
 from services import background_scheduler
 from scripts import initialize_default_question_set, assign_default_set_to_unassigned_groups
 from routes import auth, groups, questions, question_sets, push, avatars, websocket, admin, group_creator
@@ -119,6 +120,78 @@ else:
 
 # ============= Middleware =============
 
+# Paths to skip logging (high-frequency or static)
+_SKIP_LOG_PATHS = {"/health", "/docs", "/openapi.json", "/swagger-ui-dark.css"}
+
+@app.middleware("http")
+async def api_request_logger(request: Request, call_next):
+    """Log every API request to the database for admin monitoring."""
+    import time as _time
+    path = request.url.path
+
+    # Skip static/health/docs paths
+    if path in _SKIP_LOG_PATHS or path.startswith("/uploads/") or path.startswith("/admin"):
+        return await call_next(request)
+
+    start = _time.monotonic()
+
+    # Resolve account from JWT (best effort, no DB call here)
+    account_id = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        try:
+            import jwt as _jwt
+            from core.config import USER_JWT_SECRET, USER_JWT_ALGO
+            token = auth_header.split(" ", 1)[1]
+            payload = _jwt.decode(token, USER_JWT_SECRET, algorithms=[USER_JWT_ALGO])
+            account_id = int(payload.get("sub", 0)) or None
+        except Exception:
+            pass
+
+    response = await call_next(request)
+    duration_ms = int((_time.monotonic() - start) * 1000)
+
+    # Log to DB (fire-and-forget)
+    try:
+        client_ip = request.client.host if request.client else None
+        user_agent = request.headers.get("User-Agent", "")[:500]
+        query_string = str(request.url.query)[:500] if request.url.query else None
+
+        db = SessionLocal()
+        try:
+            log_entry = ApiRequestLog(
+                method=request.method,
+                path=path[:500],
+                query_string=query_string,
+                status_code=response.status_code,
+                duration_ms=duration_ms,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                account_id=account_id,
+                response_size=int(response.headers.get("content-length", 0)) or None,
+            )
+            db.add(log_entry)
+            db.commit()
+
+            # Prune old logs if table exceeds 50k rows (keep newest 40k)
+            count = db.query(ApiRequestLog).count()
+            if count > 50000:
+                cutoff_id = db.query(ApiRequestLog.id).order_by(
+                    ApiRequestLog.id.desc()
+                ).offset(40000).limit(1).scalar()
+                if cutoff_id:
+                    db.query(ApiRequestLog).filter(ApiRequestLog.id <= cutoff_id).delete()
+                    db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+    except Exception:
+        pass  # Never let logging break the response
+
+    return response
+
+
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     """Add security headers to all responses."""
@@ -159,7 +232,7 @@ app.add_middleware(
     allow_origins=allowed_origins_list,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Content-Type", "Authorization", "X-Admin-Token"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 # ============= Rate Limiting =============

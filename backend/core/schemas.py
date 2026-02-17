@@ -178,16 +178,6 @@ class GroupCreate(BaseModel):
             raise ValueError('Group name cannot be empty')
         return v
 
-class GroupResponse(BaseModel):
-    id: int
-    group_id: str
-    name: str
-    invite_code: str
-    admin_token: str
-    creator_id: Optional[int] = None
-    created_at: datetime
-    member_count: int
-
 class GroupResponsePublic(BaseModel):
     id: int
     group_id: str

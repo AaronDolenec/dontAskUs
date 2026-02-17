@@ -29,11 +29,11 @@ from core.database import get_db
 from core.models import (
     AdminUser, Account, Group, User, DailyQuestion, Vote,
     QuestionSet, QuestionTemplate, QuestionSetTemplate, GroupQuestionSet,
-    AuditLog, QuestionTypeEnum,
+    AuditLog, QuestionTypeEnum, ApiRequestLog,
 )
 from auth.utils import (
-    extract_client_ip, generate_invite_code, generate_admin_token,
-    hash_token, generate_qr_code, get_random_avatar_color,
+    extract_client_ip, generate_invite_code,
+    generate_qr_code, get_random_avatar_color,
 )
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
@@ -664,14 +664,32 @@ async def admin_create_group(
         while db.query(Group).filter(Group.invite_code == invite_code).first():
             invite_code = generate_invite_code()
         group = Group(
-            name=name, invite_code=invite_code,
-            admin_token=hash_token(generate_admin_token()), creator_id=None,
+            name=name, invite_code=invite_code, creator_id=None,
         )
         db.add(group)
         db.commit()
         db.refresh(group)
         group.qr_data = generate_qr_code(invite_code)
         db.commit()
+        # Auto-assign default question set and create today's question
+        try:
+            from scripts.seed_defaults import initialize_default_question_set
+            default_set = db.query(QuestionSet).filter(QuestionSet.name == "Default").first()
+            if not default_set:
+                initialize_default_question_set()
+                default_set = db.query(QuestionSet).filter(QuestionSet.name == "Default").first()
+            if default_set and not db.query(GroupQuestionSet).filter(
+                GroupQuestionSet.group_id == group.id, GroupQuestionSet.question_set_id == default_set.id
+            ).first():
+                db.add(GroupQuestionSet(group_id=group.id, question_set_id=default_set.id, is_active=True))
+                db.commit()
+        except Exception:
+            logging.exception("Failed to assign Default question set to admin-created group")
+        try:
+            from services.scheduler import create_today_question_for_group
+            create_today_question_for_group(db, group)
+        except Exception:
+            logging.exception("Failed to auto-create today's question for admin-created group")
         ip_address = extract_client_ip(request_obj, x_forwarded_for)
         log_admin_action(admin_id=admin.id, action="CREATE_GROUP", target_type="GROUP",
                          target_id=group.id, before_state=None, after_state={"name": name},
@@ -727,6 +745,72 @@ async def update_group_notes(
                      after_state={"instance_admin_notes": group.instance_admin_notes},
                      ip_address=ip or "unknown", reason="Admin updated group notes", db=db)
     return {"message": "Group notes updated", "group_id": group_id}
+
+
+@router.post("/groups/{group_id}/set-today-question")
+async def admin_set_today_question(
+    group_id: int, admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db), x_forwarded_for: str = Header(None), request_obj: Request = None,
+):
+    """Regenerate today's question for a group (instance admin only). Deletes old question + votes for today."""
+    from services.scheduler import create_today_question_for_group
+    import json as _json
+
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    today = datetime.now(timezone.utc).date()
+    old_q = db.query(DailyQuestion).filter(
+        and_(DailyQuestion.group_id == group.id, func.date(DailyQuestion.question_date) == today)
+    ).first()
+    if old_q:
+        db.query(Vote).filter(Vote.question_id == old_q.id).delete(synchronize_session=False)
+        db.delete(old_q)
+        db.commit()
+
+    dq = create_today_question_for_group(db, group)
+    if not dq:
+        raise HTTPException(status_code=400, detail="Unable to generate question (not enough members or templates)")
+
+    ip_address = extract_client_ip(request_obj, x_forwarded_for)
+    log_admin_action(admin_id=admin.id, action="SET_TODAY_QUESTION", target_type="GROUP",
+                     target_id=group_id, before_state=None,
+                     after_state={"question_id": dq.question_id, "question_text": dq.question_text},
+                     ip_address=ip_address, reason="Admin set today's question", db=db)
+
+    return {
+        "message": "Today's question set successfully",
+        "question_id": dq.question_id,
+        "question_text": dq.question_text,
+        "question_type": dq.question_type.value if hasattr(dq.question_type, "value") else str(dq.question_type),
+        "options": _json.loads(dq.options) if dq.options else [],
+    }
+
+
+@router.post("/groups/{group_id}/reset-question-cycle")
+async def admin_reset_question_cycle(
+    group_id: int, admin: AdminUser = Depends(get_current_admin),
+    db: Session = Depends(get_db), x_forwarded_for: str = Header(None), request_obj: Request = None,
+):
+    """Reset question cycle for a group (instance admin only). Clears all past questions."""
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    question_ids = [q.id for q in db.query(DailyQuestion.id).filter(DailyQuestion.group_id == group.id).all()]
+    if question_ids:
+        db.query(Vote).filter(Vote.question_id.in_(question_ids)).delete(synchronize_session=False)
+    deleted_count = db.query(DailyQuestion).filter(DailyQuestion.group_id == group.id).delete()
+    db.commit()
+
+    ip_address = extract_client_ip(request_obj, x_forwarded_for)
+    log_admin_action(admin_id=admin.id, action="RESET_QUESTION_CYCLE", target_type="GROUP",
+                     target_id=group_id, before_state=None,
+                     after_state={"deleted_count": deleted_count},
+                     ip_address=ip_address, reason="Admin reset question cycle", db=db)
+    logging.info(f"Question cycle reset for group {group.group_id}. Deleted {deleted_count} questions.")
+    return {"group_id": group.group_id, "message": f"Question cycle reset. {deleted_count} questions deleted.", "deleted_count": deleted_count}
 
 
 # ============= Question Set Management =============
@@ -927,3 +1011,64 @@ async def admin_delete_question(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ============= API Request Logs =============
+
+@router.get("/api-logs")
+async def get_api_request_logs(
+    admin: AdminUser = Depends(get_current_admin), db: Session = Depends(get_db),
+    limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0),
+    method: Optional[str] = Query(None, description="Filter by HTTP method"),
+    path_filter: Optional[str] = Query(None, description="Filter by path (substring)"),
+    status_code: Optional[int] = Query(None, description="Filter by status code"),
+    min_duration: Optional[int] = Query(None, description="Minimum duration in ms"),
+):
+    """Get server-side API request logs (all endpoints, all users)."""
+    query = db.query(ApiRequestLog)
+    if method:
+        query = query.filter(ApiRequestLog.method == method.upper())
+    if path_filter:
+        query = query.filter(ApiRequestLog.path.ilike(f"%{path_filter}%"))
+    if status_code is not None:
+        query = query.filter(ApiRequestLog.status_code == status_code)
+    if min_duration is not None:
+        query = query.filter(ApiRequestLog.duration_ms >= min_duration)
+    total = query.count()
+    logs = query.order_by(ApiRequestLog.id.desc()).limit(limit).offset(offset).all()
+    return {
+        "logs": [
+            {
+                "id": l.id,
+                "timestamp": l.timestamp.isoformat() if l.timestamp else None,
+                "method": l.method,
+                "path": l.path,
+                "query_string": l.query_string,
+                "status_code": l.status_code,
+                "duration_ms": l.duration_ms,
+                "client_ip": l.client_ip,
+                "user_agent": l.user_agent,
+                "account_id": l.account_id,
+                "request_body_preview": l.request_body_preview,
+                "response_size": l.response_size,
+            }
+            for l in logs
+        ],
+        "total": total, "limit": limit, "offset": offset,
+    }
+
+
+@router.delete("/api-logs")
+async def clear_api_request_logs(
+    admin: AdminUser = Depends(get_current_admin), db: Session = Depends(get_db),
+    x_forwarded_for: str = Header(None), request_obj: Request = None,
+):
+    """Clear all API request logs."""
+    deleted = db.query(ApiRequestLog).delete()
+    db.commit()
+    ip_address = extract_client_ip(request_obj, x_forwarded_for)
+    log_admin_action(admin_id=admin.id, action="CLEAR_API_LOGS", target_type="API_LOGS",
+                     target_id="all", before_state=None,
+                     after_state={"deleted_count": deleted},
+                     ip_address=ip_address, reason="Admin cleared API logs", db=db)
+    return {"message": f"Cleared {deleted} API log entries"}

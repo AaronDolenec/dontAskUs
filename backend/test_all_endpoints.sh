@@ -337,17 +337,17 @@ req POST "$BASE/api/auth/change-password" \
 # ════════════════════════════════════════════════════════════
 echo ""
 echo -e "${BOLD}[4] Group Endpoints${NC}"
-echo -e "    ${CYAN}POST /api/groups (unauthenticated create)${NC}"
+echo -e "    ${CYAN}POST /api/groups (unauthenticated - should not exist)${NC}"
 # ════════════════════════════════════════════════════════════
 resp=$(req POST "$BASE/api/groups" \
   -H "Content-Type: application/json" \
   -d "{\"name\":\"TestGroup_${TIMESTAMP}\"}")
 code=$(echo "$resp" | head -1)
 body=$(echo "$resp" | tail -n +2)
-check "POST /api/groups (create group)" "200" "$code" "$body"
+check "POST /api/groups (unauthenticated - rejected)" "404" "$code" "$body"
 UNAUTH_GROUP_ID=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('group_id',''))" 2>/dev/null)
 UNAUTH_INVITE_CODE=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('invite_code',''))" 2>/dev/null)
-UNAUTH_ADMIN_TOKEN=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('admin_token',''))" 2>/dev/null)
+# admin_token no longer returned — group creator identified via JWT + creator_id
 
 # ════════════════════════════════════════════════════════════
 echo ""
@@ -362,7 +362,7 @@ body=$(echo "$resp" | tail -n +2)
 check "POST /api/auth/groups/create (authenticated)" "200" "$code" "$body"
 AUTH_GROUP_ID=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('group_id',''))" 2>/dev/null)
 AUTH_INVITE_CODE=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('invite_code',''))" 2>/dev/null)
-AUTH_ADMIN_TOKEN=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('admin_token',''))" 2>/dev/null)
+# admin_token no longer returned — group creator identified via JWT + creator_id
 AUTH_GROUP_INT_ID=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
 
 # ════════════════════════════════════════════════════════════
@@ -383,7 +383,8 @@ check "GET /api/groups/{invite_code} (invalid)" "404" "$code" "$body"
 echo ""
 echo -e "    ${CYAN}GET /api/groups/{group_id}/info${NC}"
 # ════════════════════════════════════════════════════════════
-resp=$(req GET "$BASE/api/groups/$AUTH_GROUP_ID/info")
+resp=$(req GET "$BASE/api/groups/$AUTH_GROUP_ID/info" \
+  -H "Authorization: Bearer $USER_ACCESS")
 code=$(echo "$resp" | head -1)
 body=$(echo "$resp" | tail -n +2)
 check "GET /api/groups/{group_id}/info" "200" "$code" "$body"
@@ -392,7 +393,8 @@ check "GET /api/groups/{group_id}/info" "200" "$code" "$body"
 echo ""
 echo -e "    ${CYAN}GET /api/groups/{group_id}/members${NC}"
 # ════════════════════════════════════════════════════════════
-resp=$(req GET "$BASE/api/groups/$AUTH_GROUP_ID/members")
+resp=$(req GET "$BASE/api/groups/$AUTH_GROUP_ID/members" \
+  -H "Authorization: Bearer $USER_ACCESS")
 code=$(echo "$resp" | head -1)
 body=$(echo "$resp" | tail -n +2)
 check "GET /api/groups/{group_id}/members" "200" "$code" "$body"
@@ -498,23 +500,24 @@ NEW_SET_ID=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.std
 echo ""
 echo -e "    ${CYAN}POST /api/groups/{group_id}/question-sets (assign)${NC}"
 # ════════════════════════════════════════════════════════════
-if [ -n "$AUTH_ADMIN_TOKEN" ] && [ -n "$FIRST_SET_ID" ]; then
+if [ -n "$FIRST_SET_ID" ]; then
     resp=$(req POST "$BASE/api/groups/$AUTH_GROUP_ID/question-sets" \
       -H "Content-Type: application/json" \
-      -H "X-Admin-Token: $AUTH_ADMIN_TOKEN" \
+      -H "Authorization: Bearer $USER_ACCESS" \
       -d "{\"question_set_ids\":[\"$FIRST_SET_ID\"],\"replace\":false}")
     code=$(echo "$resp" | head -1)
     body=$(echo "$resp" | tail -n +2)
-    check "POST /api/groups/{group_id}/question-sets (assign)" "200" "$code" "$body"
+    check "POST /api/groups/{group_id}/question-sets (assign via JWT)" "200" "$code" "$body"
 else
-    skip "POST /api/groups/{group_id}/question-sets" "missing admin token or set_id"
+    skip "POST /api/groups/{group_id}/question-sets" "missing set_id"
 fi
 
 # ════════════════════════════════════════════════════════════
 echo ""
 echo -e "    ${CYAN}GET /api/groups/{group_id}/question-sets${NC}"
 # ════════════════════════════════════════════════════════════
-resp=$(req GET "$BASE/api/groups/$AUTH_GROUP_ID/question-sets")
+resp=$(req GET "$BASE/api/groups/$AUTH_GROUP_ID/question-sets" \
+  -H "Authorization: Bearer $USER_ACCESS")
 code=$(echo "$resp" | head -1)
 body=$(echo "$resp" | tail -n +2)
 check "GET /api/groups/{group_id}/question-sets" "200" "$code" "$body"
@@ -524,10 +527,11 @@ echo ""
 echo -e "${BOLD}[6] Daily Questions & Voting${NC}"
 echo -e "    ${CYAN}GET /api/groups/{group_id}/questions/today${NC}"
 # ════════════════════════════════════════════════════════════
-resp=$(req GET "$BASE/api/groups/$AUTH_GROUP_ID/questions/today")
+resp=$(req GET "$BASE/api/groups/$AUTH_GROUP_ID/questions/today" \
+  -H "Authorization: Bearer $USER_ACCESS")
 code=$(echo "$resp" | head -1)
 body=$(echo "$resp" | tail -n +2)
-# Might be 404 if no question yet, or 200 if scheduler created one
+# Might be 404 if no question yet, or 200 if auto-question was created on group create
 if [ "$code" = "200" ] || [ "$code" = "404" ]; then
     check "GET /api/groups/{group_id}/questions/today" "$code" "$code" "$body"
     if [ "$code" = "200" ]; then
@@ -539,19 +543,20 @@ fi
 
 # ════════════════════════════════════════════════════════════
 echo ""
-echo -e "    ${CYAN}POST /api/admin/groups/{group_id}/regenerate-today (group admin)${NC}"
+echo -e "    ${CYAN}POST /api/admin/groups/{group_id}/set-today-question (instance admin)${NC}"
 # ════════════════════════════════════════════════════════════
-# Use group admin token to regenerate today's question
-resp=$(req POST "$BASE/api/admin/groups/$AUTH_GROUP_ID/regenerate-today" \
-  -H "X-Admin-Token: $AUTH_ADMIN_TOKEN")
+# Use instance admin JWT to set today's question
+resp=$(req POST "$BASE/api/admin/groups/$AUTH_GROUP_INT_ID/set-today-question" \
+  -H "Authorization: Bearer $ADMIN_ACCESS")
 code=$(echo "$resp" | head -1)
 body=$(echo "$resp" | tail -n +2)
-check "POST /api/admin/groups/{group_id}/regenerate-today" "200" "$code" "$body"
+check "POST /api/admin/groups/{group_id}/set-today-question" "200" "$code" "$body"
 QUESTION_ID=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('question_id',''))" 2>/dev/null)
 Q_TYPE=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('question_type',''))" 2>/dev/null)
 
 # Now get today's question (should exist)
-resp=$(req GET "$BASE/api/groups/$AUTH_GROUP_ID/questions/today")
+resp=$(req GET "$BASE/api/groups/$AUTH_GROUP_ID/questions/today" \
+  -H "Authorization: Bearer $USER_ACCESS")
 code=$(echo "$resp" | head -1)
 body=$(echo "$resp" | tail -n +2)
 check "GET /api/groups/{group_id}/questions/today (after regenerate)" "200" "$code" "$body"
@@ -601,30 +606,31 @@ fi
 echo ""
 echo -e "    ${CYAN}GET /api/groups/{group_id}/questions/history${NC}"
 # ════════════════════════════════════════════════════════════
-resp=$(req GET "$BASE/api/groups/$AUTH_GROUP_ID/questions/history?skip=0&limit=5")
+resp=$(req GET "$BASE/api/groups/$AUTH_GROUP_ID/questions/history?skip=0&limit=5" \
+  -H "Authorization: Bearer $USER_ACCESS")
 code=$(echo "$resp" | head -1)
 body=$(echo "$resp" | tail -n +2)
 check "GET /api/groups/{group_id}/questions/history" "200" "$code" "$body"
 
 # ════════════════════════════════════════════════════════════
 echo ""
-echo -e "    ${CYAN}GET /api/admin/groups/{group_id}/question-status (group admin)${NC}"
+echo -e "    ${CYAN}GET /api/groups/{group_id}/question-status (group creator via JWT)${NC}"
 # ════════════════════════════════════════════════════════════
-resp=$(req GET "$BASE/api/admin/groups/$AUTH_GROUP_ID/question-status" \
-  -H "X-Admin-Token: $AUTH_ADMIN_TOKEN")
+resp=$(req GET "$BASE/api/groups/$AUTH_GROUP_ID/question-status" \
+  -H "Authorization: Bearer $USER_ACCESS")
 code=$(echo "$resp" | head -1)
 body=$(echo "$resp" | tail -n +2)
-check "GET /api/admin/groups/{group_id}/question-status" "200" "$code" "$body"
+check "GET /api/groups/{group_id}/question-status (creator JWT)" "200" "$code" "$body"
 
 # ════════════════════════════════════════════════════════════
 echo ""
-echo -e "    ${CYAN}GET /api/admin/groups/{group_id}/leaderboard (group admin)${NC}"
+echo -e "    ${CYAN}GET /api/groups/{group_id}/leaderboard (group member via JWT)${NC}"
 # ════════════════════════════════════════════════════════════
-resp=$(req GET "$BASE/api/admin/groups/$AUTH_GROUP_ID/leaderboard" \
-  -H "X-Admin-Token: $AUTH_ADMIN_TOKEN")
+resp=$(req GET "$BASE/api/groups/$AUTH_GROUP_ID/leaderboard" \
+  -H "Authorization: Bearer $USER_ACCESS")
 code=$(echo "$resp" | head -1)
 body=$(echo "$resp" | tail -n +2)
-check "GET /api/admin/groups/{group_id}/leaderboard" "200" "$code" "$body"
+check "GET /api/groups/{group_id}/leaderboard (JWT)" "200" "$code" "$body"
 
 # ════════════════════════════════════════════════════════════
 echo ""
@@ -952,19 +958,18 @@ fi
 echo ""
 echo -e "${BOLD}[12] Group Admin — Question Cycle${NC}"
 # ════════════════════════════════════════════════════════════
-echo -e "    ${CYAN}POST /api/admin/groups/{group_id}/reset-question-cycle${NC}"
-resp=$(req POST "$BASE/api/admin/groups/$AUTH_GROUP_ID/reset-question-cycle" \
-  -H "X-Admin-Token: $AUTH_ADMIN_TOKEN")
+echo -e "    ${CYAN}POST /api/admin/groups/{group_id}/reset-question-cycle (instance admin)${NC}"
+resp=$(req POST "$BASE/api/admin/groups/$AUTH_GROUP_INT_ID/reset-question-cycle" \
+  -H "Authorization: Bearer $ADMIN_ACCESS")
 code=$(echo "$resp" | head -1)
 body=$(echo "$resp" | tail -n +2)
 check "POST /api/admin/groups/{group_id}/reset-question-cycle" "200" "$code" "$body"
 
-# Bad admin token
-resp=$(req POST "$BASE/api/admin/groups/$AUTH_GROUP_ID/reset-question-cycle" \
-  -H "X-Admin-Token: invalid-token")
+# No auth
+resp=$(req POST "$BASE/api/admin/groups/$AUTH_GROUP_INT_ID/reset-question-cycle")
 code=$(echo "$resp" | head -1)
 body=$(echo "$resp" | tail -n +2)
-check "POST .../reset-question-cycle (bad token)" "401" "$code" "$body"
+check "POST .../reset-question-cycle (no auth)" "401" "$code" "$body"
 
 # ════════════════════════════════════════════════════════════
 echo ""

@@ -109,7 +109,6 @@ class Group(Base):
     name = Column(String(100), index=True)
     invite_code = Column(String(8), unique=True, index=True)
     qr_data = Column(Text)
-    admin_token = Column(String(255), unique=True)  # Hashed token
     creator_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
@@ -357,4 +356,28 @@ class UserDeviceToken(Base):
     is_active = Column(Boolean, default=True)
     
     user = relationship("User", backref="device_tokens")
+
+
+class ApiRequestLog(Base):
+    """Server-side log of every API request for admin monitoring."""
+    __tablename__ = "api_request_logs"
+    __table_args__ = (
+        Index('idx_api_logs_timestamp', 'timestamp'),
+        Index('idx_api_logs_method', 'method'),
+        Index('idx_api_logs_status', 'status_code'),
+        Index('idx_api_logs_path', 'path'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    method = Column(String(10), nullable=False)
+    path = Column(String(500), nullable=False)
+    query_string = Column(String(500), nullable=True)
+    status_code = Column(Integer, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    client_ip = Column(String(45), nullable=True)
+    user_agent = Column(String(500), nullable=True)
+    account_id = Column(Integer, nullable=True)  # Resolved from JWT if present
+    request_body_preview = Column(Text, nullable=True)  # First 2000 chars
+    response_size = Column(Integer, nullable=True)  # Response body size in bytes
 

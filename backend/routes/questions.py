@@ -12,77 +12,19 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.models import (
-    Group, User, DailyQuestion, Vote, QuestionTemplate, QuestionSet,
-    QuestionSetTemplate, GroupQuestionSet, QuestionTypeEnum, UserDeviceToken,
+    Group, User, DailyQuestion, Vote, QuestionTemplate,
+    QuestionSet, QuestionSetTemplate, GroupQuestionSet, QuestionTypeEnum,
 )
-from services.push_notifications import push_service
-from core.schemas import DailyQuestionCreate, DailyQuestionResponse, AnswerSubmissionCreate
+from core.schemas import DailyQuestionResponse, AnswerSubmissionCreate
 from auth.utils import (
-    get_group_by_id, require_group_admin, get_user_for_group,
-    get_group_member_names, generate_duos, get_option_counts, get_user_vote,
+    get_group_by_id, get_user_for_group,
+    get_option_counts, get_user_vote,
     get_user_group_streak, update_user_group_streak, normalize_answer_submission,
     get_avatar_url,
 )
 
 router = APIRouter(prefix="/api", tags=["Questions"])
 limiter = Limiter(key_func=get_remote_address)
-
-
-@router.post("/groups/{group_id}/questions", response_model=DailyQuestionResponse)
-@limiter.limit("10/minute")
-def create_daily_question(
-    request: Request,
-    group: Group = Depends(require_group_admin),
-    question: DailyQuestionCreate = None,
-    db: Session = Depends(get_db),
-):
-    """Create a new daily question (admin endpoint)."""
-    today = datetime.now(timezone.utc).date()
-    existing = db.query(DailyQuestion).filter(
-        and_(DailyQuestion.group_id == group.id, func.date(DailyQuestion.question_date) == today)
-    ).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Question already exists for today")
-
-    question_set = None
-    if question.question_set_id:
-        question_set = db.query(QuestionSet).filter(QuestionSet.set_id == question.question_set_id).first()
-        if not question_set:
-            raise HTTPException(status_code=404, detail="Question set not found")
-    else:
-        question_set = (
-            db.query(QuestionSet).filter(QuestionSet.name == "Default").first()
-            or db.query(QuestionSet).filter(QuestionSet.is_public == True).first()
-        )
-    if question_set:
-        logging.info(f"Creating question for group {group.group_id} from set '{question_set.name}'")
-
-    members = get_group_member_names(group, db)
-    options_list = _build_options(question.question_type, members, question)
-
-    option_a = options_list[0] if options_list else None
-    option_b = options_list[1] if len(options_list) > 1 else None
-
-    db_question = DailyQuestion(
-        group_id=group.id, question_text=question.question_text,
-        option_a=option_a, option_b=option_b,
-        options=json.dumps(options_list) if options_list else None,
-        question_type=question.question_type, allow_multiple=question.allow_multiple,
-    )
-    db.add(db_question)
-    db.commit()
-    db.refresh(db_question)
-
-    _send_push_for_question(db, group, db_question)
-
-    return DailyQuestionResponse(
-        id=db_question.id, question_id=db_question.question_id,
-        question_text=db_question.question_text, question_type=db_question.question_type,
-        options=json.loads(db_question.options) if db_question.options else [],
-        option_counts={}, question_date=db_question.question_date,
-        is_active=db_question.is_active, total_votes=0,
-        allow_multiple=db_question.allow_multiple,
-    )
 
 
 @router.get("/groups/{group_id}/questions/today")
@@ -233,12 +175,16 @@ def get_question_history(
     return {"group_id": group_id, "total_count": total_count, "skip": skip, "limit": limit, "questions": result}
 
 
-# ============= Group Admin Question Management =============
+# ============= Group Creator Question Management =============
 
-@router.get("/admin/groups/{group_id}/leaderboard")
+@router.get("/groups/{group_id}/leaderboard")
 @limiter.limit("60/minute")
-def get_leaderboard(request: Request, group: Group = Depends(require_group_admin), db: Session = Depends(get_db)):
-    """Get group leaderboard by answer streak (group admin only)."""
+def get_leaderboard(request: Request, group_id: str, db: Session = Depends(get_db)):
+    """Get group leaderboard by answer streak (group member, authenticated)."""
+    group = get_group_by_id(group_id, db)
+    user = get_user_for_group(request, group, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
     members = db.query(User).filter(User.group_id == group.id).all()
     leaderboard = sorted(members, key=lambda x: (x.answer_streak, x.longest_answer_streak), reverse=True)
     base_url = str(request.base_url).rstrip('/')
@@ -252,10 +198,16 @@ def get_leaderboard(request: Request, group: Group = Depends(require_group_admin
     ]
 
 
-@router.get("/admin/groups/{group_id}/question-status")
+@router.get("/groups/{group_id}/question-status")
 @limiter.limit("60/minute")
-def get_question_status(request: Request, group: Group = Depends(require_group_admin), db: Session = Depends(get_db)):
-    """Get question exhaustion status for a group (group admin only)."""
+def get_question_status(request: Request, group_id: str, db: Session = Depends(get_db)):
+    """Get question exhaustion status for a group (group creator only)."""
+    group = get_group_by_id(group_id, db)
+    user = get_user_for_group(request, group, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if group.creator_id != user.id:
+        raise HTTPException(status_code=403, detail="Only the group creator can view question status")
     assigned = db.query(GroupQuestionSet).filter(
         GroupQuestionSet.group_id == group.id, GroupQuestionSet.is_active == True
     ).all()
@@ -283,85 +235,3 @@ def get_question_status(request: Request, group: Group = Depends(require_group_a
         "total_questions_created": question_count,
         "message": "All questions have been used. Cycle will reset on next question." if exhausted else "Questions available",
     }
-
-
-@router.post("/admin/groups/{group_id}/reset-question-cycle")
-@limiter.limit("10/minute")
-def reset_question_cycle(request: Request, group: Group = Depends(require_group_admin), db: Session = Depends(get_db)):
-    """Reset question cycle by clearing used questions (group admin only)."""
-    # Delete votes for this group's daily questions first (FK constraint)
-    question_ids = [q.id for q in db.query(DailyQuestion.id).filter(DailyQuestion.group_id == group.id).all()]
-    if question_ids:
-        db.query(Vote).filter(Vote.question_id.in_(question_ids)).delete(synchronize_session=False)
-    deleted_count = db.query(DailyQuestion).filter(DailyQuestion.group_id == group.id).delete()
-    db.commit()
-    logging.info(f"Question cycle reset for group {group.group_id}. Deleted {deleted_count} questions.")
-    return {"group_id": group.group_id, "message": f"Question cycle reset. {deleted_count} questions deleted.", "deleted_count": deleted_count}
-
-
-@router.post("/admin/groups/{group_id}/regenerate-today")
-@limiter.limit("10/minute")
-def regenerate_todays_question(
-    request: Request, group: Group = Depends(require_group_admin), db: Session = Depends(get_db),
-):
-    """Delete today's question and create a new one from current sets."""
-    from scheduler import create_today_question_for_group
-    today = datetime.now(timezone.utc).date()
-    db.query(DailyQuestion).filter(
-        and_(DailyQuestion.group_id == group.id, func.date(DailyQuestion.question_date) == today)
-    ).delete()
-    db.commit()
-    dq = create_today_question_for_group(db, group)
-    if not dq:
-        raise HTTPException(status_code=400, detail="Unable to generate today's question (insufficient members or no templates)")
-    options_list = json.loads(dq.options) if dq.options else []
-    option_counts = get_option_counts(dq.id, db)
-    total_votes = db.query(func.count(Vote.id)).filter(Vote.question_id == dq.id).scalar() or 0
-    return DailyQuestionResponse(
-        id=dq.id, question_id=dq.question_id, question_text=dq.question_text,
-        question_type=dq.question_type, options=options_list, option_counts=option_counts,
-        question_date=dq.question_date, is_active=dq.is_active, total_votes=total_votes,
-    )
-
-
-# ============= Helpers =============
-
-def _build_options(question_type, members: list[str], question) -> list:
-    """Build options list based on question type."""
-    if question_type == QuestionTypeEnum.MEMBER_CHOICE:
-        if len(members) < 2:
-            raise HTTPException(status_code=400, detail="Need at least two group members for member_choice")
-        return members
-    elif question_type == QuestionTypeEnum.DUO_CHOICE:
-        if len(members) < 2:
-            raise HTTPException(status_code=400, detail="Need at least two group members for duo_choice")
-        return generate_duos(members)
-    elif question_type == QuestionTypeEnum.BINARY_VOTE:
-        return ["Yes", "No"]
-    elif question_type == QuestionTypeEnum.SINGLE_CHOICE:
-        if question.option_a and question.option_b:
-            return [question.option_a, question.option_b]
-        return members if len(members) >= 2 else []
-    return []  # FREE_TEXT
-
-
-def _send_push_for_question(db: Session, group: Group, question: DailyQuestion):
-    """Send push notifications for a new daily question if enabled."""
-    if not push_service.is_enabled():
-        return
-    try:
-        group_user_ids = [m.id for m in db.query(User).filter(User.group_id == group.id, User.is_suspended == False).all()]
-        device_tokens = db.query(UserDeviceToken).filter(
-            UserDeviceToken.user_id.in_(group_user_ids), UserDeviceToken.is_active == True
-        ).all()
-        if device_tokens:
-            tokens = [dt.token for dt in device_tokens]
-            import asyncio
-            asyncio.create_task(
-                push_service.send_daily_question_notification(
-                    tokens=tokens, group_name=group.name, question_preview=question.question_text[:100]
-                )
-            )
-            logging.info(f"Push notification sent to {len(tokens)} devices for group {group.group_id}")
-    except Exception as e:
-        logging.error(f"Failed to send push notifications: {e}")
