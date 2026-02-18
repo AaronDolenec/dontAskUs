@@ -55,8 +55,9 @@ def get_todays_question(request: Request, group_id: str = PathParam(...), db: Se
 
     # For free_text questions, include all text answers so users can see what everyone wrote
     text_answers = None
+    base_url = str(request.base_url).rstrip('/')
     if question.question_type == QuestionTypeEnum.FREE_TEXT:
-        text_answers = get_text_answers(question.id, db)
+        text_answers = get_text_answers(question.id, db, base_url)
 
     return DailyQuestionResponse(
         id=question.id, question_id=question.question_id,
@@ -143,7 +144,8 @@ def submit_answer(
         "current_streak": streak.current_streak, "longest_streak": streak.longest_streak,
     }
     if question.question_type == QuestionTypeEnum.FREE_TEXT:
-        response["text_answers"] = get_text_answers(question.id, db)
+        base_url = str(request.base_url).rstrip('/')
+        response["text_answers"] = get_text_answers(question.id, db, base_url)
     return response
 
 
@@ -166,6 +168,7 @@ def get_question_history(
     ).order_by(DailyQuestion.question_date.desc()).offset(skip).limit(limit).all()
     total_count = db.query(DailyQuestion).filter(DailyQuestion.group_id == group.id).count()
 
+    base_url = str(request.base_url).rstrip('/')
     result = []
     for q in questions:
         opts = json.loads(q.options) if q.options else []
@@ -184,7 +187,7 @@ def get_question_history(
             "user_vote": user_vote,
         }
         if q.question_type == QuestionTypeEnum.FREE_TEXT:
-            entry["text_answers"] = get_text_answers(q.id, db)
+            entry["text_answers"] = get_text_answers(q.id, db, base_url)
         result.append(entry)
     return {"group_id": group_id, "total_count": total_count, "skip": skip, "limit": limit, "questions": result}
 

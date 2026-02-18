@@ -72,13 +72,22 @@ AVATAR_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 AVATAR_MAX_SIZE_MB = 2
 AVATAR_MAX_SIZE_BYTES = AVATAR_MAX_SIZE_MB * 1024 * 1024
 AVATAR_MAX_DIMENSION = 256
-AVATAR_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+AVATAR_ALLOWED_TYPES = {
+    "image/jpeg", "image/png", "image/gif", "image/webp",
+    "image/bmp", "image/tiff", "image/x-icon", "image/vnd.microsoft.icon",
+    "image/heic", "image/heif", "image/avif", "image/svg+xml",
+}
 AVATAR_MAGIC_BYTES = {
     b'\xff\xd8\xff': 'image/jpeg',
     b'\x89PNG\r\n\x1a\n': 'image/png',
     b'GIF87a': 'image/gif',
     b'GIF89a': 'image/gif',
     b'RIFF': 'image/webp',
+    b'BM': 'image/bmp',
+    b'II': 'image/tiff',  # little-endian TIFF
+    b'MM': 'image/tiff',  # big-endian TIFF
+    b'\x00\x00\x01\x00': 'image/x-icon',  # ICO
+    b'\x00\x00\x02\x00': 'image/x-icon',  # CUR (cursor, similar to ICO)
 }
 
 # ============= Reverse Proxy =============

@@ -28,8 +28,17 @@ async def upload_avatar(request: Request, user_id: str, file: UploadFile = File(
     file_bytes = await file.read()
     if len(file_bytes) > AVATAR_MAX_SIZE_BYTES:
         raise HTTPException(status_code=400, detail=f"File too large. Maximum size is {AVATAR_MAX_SIZE_MB}MB")
-    if file.content_type not in AVATAR_ALLOWED_TYPES:
-        raise HTTPException(status_code=400, detail="Invalid file type. Allowed: JPEG, PNG, GIF, WebP")
+
+    # Content-type check: allow known image types and generic/octet-stream
+    # (many mobile browsers send incorrect MIME types). The real validation
+    # is done via magic-byte inspection below.
+    if file.content_type and file.content_type not in AVATAR_ALLOWED_TYPES and file.content_type not in (
+        "application/octet-stream", "binary/octet-stream",
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Allowed: JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, HEIC, HEIF, AVIF, SVG",
+        )
 
     detected_type = validate_image_magic_bytes(file_bytes)
     if not detected_type:

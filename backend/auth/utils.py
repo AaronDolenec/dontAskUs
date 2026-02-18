@@ -203,12 +203,41 @@ def get_avatar_url(avatar_filename: Optional[str], base_url: str = "") -> Option
 
 
 def validate_image_magic_bytes(file_bytes: bytes) -> Optional[str]:
-    """Validate file by checking magic bytes. Returns detected MIME type or None."""
+    """Validate file by checking magic bytes. Returns detected MIME type or None.
+    
+    For formats with complex headers (HEIC, AVIF, SVG), falls back to
+    Pillow-based detection if magic bytes don't match.
+    """
     for magic, mime_type in AVATAR_MAGIC_BYTES.items():
         if file_bytes.startswith(magic):
             return mime_type
     if file_bytes[:4] == b'RIFF' and file_bytes[8:12] == b'WEBP':
         return 'image/webp'
+    # HEIC/HEIF: ftyp box with heic/heix/mif1 brands
+    if len(file_bytes) >= 12 and file_bytes[4:8] == b'ftyp':
+        brand = file_bytes[8:12].lower()
+        if brand in (b'heic', b'heix', b'mif1', b'msf1', b'hevc'):
+            return 'image/heic'
+        if brand in (b'avif', b'avis'):
+            return 'image/avif'
+    # SVG: starts with <?xml or <svg (possibly with BOM/whitespace)
+    stripped = file_bytes[:500].lstrip()
+    if stripped.startswith(b'<?xml') or stripped.startswith(b'<svg'):
+        return 'image/svg+xml'
+    # Fallback: try opening with Pillow
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+        img.verify()
+        fmt = img.format
+        if fmt:
+            mime_map = {
+                'JPEG': 'image/jpeg', 'PNG': 'image/png', 'GIF': 'image/gif',
+                'WEBP': 'image/webp', 'BMP': 'image/bmp', 'TIFF': 'image/tiff',
+                'ICO': 'image/x-icon',
+            }
+            return mime_map.get(fmt.upper())
+    except Exception:
+        pass
     return None
 
 
@@ -392,17 +421,25 @@ def get_user_vote(user_id: int, question_id: int, db: Session) -> Optional[str]:
     return parse_vote_answer(vote.answer)
 
 
-def get_text_answers(question_id: int, db: Session) -> list[dict]:
-    """Get all free-text answers for a question with display names."""
+def get_text_answers(question_id: int, db: Session, base_url: str = "") -> list[dict]:
+    """Get all free-text answers for a question with display names and avatars."""
     from core.models import Vote, User
     votes = (
-        db.query(Vote.text_answer, User.display_name)
+        db.query(Vote.text_answer, User.display_name, User.color_avatar, User.avatar_filename)
         .join(User, Vote.user_id == User.id)
         .filter(Vote.question_id == question_id, Vote.text_answer.isnot(None))
         .order_by(Vote.voted_at)
         .all()
     )
-    return [{"display_name": v.display_name, "text_answer": v.text_answer} for v in votes]
+    return [
+        {
+            "display_name": v.display_name,
+            "text_answer": v.text_answer,
+            "color_avatar": v.color_avatar or "#3498db",
+            "avatar_url": get_avatar_url(v.avatar_filename, base_url),
+        }
+        for v in votes
+    ]
 
 
 # ============= Streak Helpers =============

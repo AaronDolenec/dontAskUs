@@ -1,8 +1,8 @@
 # dontAskUs - Complete API Documentation
 
 **Base URL:** `http://localhost:8000` (development)  
-**Version:** 1.3.0  
-**Last Updated:** February 17, 2026
+**Version:** 1.4.0  
+**Last Updated:** February 18, 2026
 
 **IMPORTANT:** All API endpoints require authentication unless explicitly marked as "Public" or "No
 Auth". After registration or login, include the access token in the `Authorization: Bearer <token>`
@@ -213,14 +213,27 @@ Content-Type: application/json
   "access_token": "eyJ...",
   "refresh_token": "eyJ...",
   "token_type": "bearer",
-  "user": {
-    "account_id": 1,
-    "email": "alice@example.com",
-    "display_name": "Alice",
-    "groups": []
-  }
+  "expires_in": 1800,
+  "account_id": "uuid",
+  "display_name": "Alice",
+  "email": "alice@example.com",
+  "avatar_url": null,
+  "color_avatar": null,
+  "answer_streak": 0,
+  "longest_answer_streak": 0
 }
 ```
+
+| Field                   | Type           | Description                                  |
+| ----------------------- | -------------- | -------------------------------------------- |
+| `avatar_url`            | string \| null | Full URL to the user's uploaded avatar image |
+| `color_avatar`          | string \| null | Hex color fallback avatar (e.g. `"#BB8FCE"`) |
+| `answer_streak`         | int            | Current consecutive-day answer streak        |
+| `longest_answer_streak` | int            | All-time longest streak                      |
+
+> **Note:** For newly registered accounts (no group memberships yet), `avatar_url` and
+> `color_avatar` will be `null`, and streaks will be `0`. These fields are aggregated from the
+> user's group memberships.
 
 **Errors:**
 
@@ -252,21 +265,23 @@ Content-Type: application/json
   "access_token": "eyJ...",
   "refresh_token": "eyJ...",
   "token_type": "bearer",
-  "user": {
-    "account_id": 1,
-    "email": "alice@example.com",
-    "display_name": "Alice",
-    "groups": [
-      {
-        "user_id": 10,
-        "group_id": "group-uuid",
-        "group_name": "My Group",
-        "display_name": "Alice"
-      }
-    ]
-  }
+  "expires_in": 1800,
+  "account_id": "uuid",
+  "display_name": "Alice",
+  "email": "alice@example.com",
+  "avatar_url": "https://api.example.com/uploads/avatars/abc123.webp",
+  "color_avatar": "#BB8FCE",
+  "answer_streak": 5,
+  "longest_answer_streak": 12
 }
 ```
+
+| Field                   | Type           | Description                                       |
+| ----------------------- | -------------- | ------------------------------------------------- |
+| `avatar_url`            | string \| null | Full URL to user's uploaded avatar (null if none) |
+| `color_avatar`          | string \| null | Hex color fallback from first group membership    |
+| `answer_streak`         | int            | Max current streak across all group memberships   |
+| `longest_answer_streak` | int            | Max all-time streak across all group memberships  |
 
 **Errors:**
 
@@ -297,9 +312,19 @@ Content-Type: application/json
   "access_token": "eyJ...",
   "refresh_token": "eyJ...",
   "token_type": "bearer",
-  "user": { ... }
+  "expires_in": 1800,
+  "account_id": "uuid",
+  "display_name": "Alice",
+  "email": "alice@example.com",
+  "avatar_url": "https://api.example.com/uploads/avatars/abc123.webp",
+  "color_avatar": "#BB8FCE",
+  "answer_streak": 5,
+  "longest_answer_streak": 12
 }
 ```
+
+The response includes the same `avatar_url`, `color_avatar`, `answer_streak`, and
+`longest_answer_streak` fields as login.
 
 **Errors:**
 
@@ -322,19 +347,44 @@ Authorization: Bearer <access_token>
 
 ```json
 {
-  "account_id": 1,
-  "email": "alice@example.com",
-  "display_name": "Alice",
+  "account": {
+    "account_id": "uuid",
+    "email": "alice@example.com",
+    "display_name": "Alice",
+    "is_active": true,
+    "is_verified": false,
+    "created_at": "2026-02-18T00:00:00Z",
+    "last_login": "2026-02-18T12:00:00Z",
+    "avatar_url": "https://api.example.com/uploads/avatars/abc123.webp",
+    "color_avatar": "#BB8FCE",
+    "answer_streak": 5,
+    "longest_answer_streak": 12
+  },
   "groups": [
     {
-      "user_id": 10,
+      "user_id": "uuid",
       "group_id": "group-uuid",
       "group_name": "My Group",
-      "display_name": "Alice"
+      "display_name": "Alice",
+      "color_avatar": "#BB8FCE",
+      "avatar_url": "https://api.example.com/uploads/avatars/abc123.webp",
+      "answer_streak": 5,
+      "longest_answer_streak": 12,
+      "joined_at": "2026-02-01T10:00:00Z"
     }
   ]
 }
 ```
+
+| Field (account level)   | Type           | Description                                        |
+| ----------------------- | -------------- | -------------------------------------------------- |
+| `avatar_url`            | string \| null | Uploaded avatar from first membership that has one |
+| `color_avatar`          | string \| null | Color avatar from first group membership           |
+| `answer_streak`         | int            | Max current streak across all memberships          |
+| `longest_answer_streak` | int            | Max all-time longest streak across all memberships |
+
+Each group membership also includes per-group `avatar_url`, `color_avatar`, `answer_streak`,
+`longest_answer_streak`, and `joined_at`.
 
 **Errors:**
 
@@ -463,10 +513,15 @@ Content-Type: application/json
 
 ```json
 {
-  "user_id": 10,
+  "user_id": "uuid",
   "group_id": "group-uuid",
   "group_name": "My Group",
-  "display_name": "Alice"
+  "display_name": "Alice",
+  "color_avatar": "#BB8FCE",
+  "avatar_url": null,
+  "answer_streak": 0,
+  "longest_answer_streak": 0,
+  "joined_at": "2026-02-18T10:00:00Z"
 }
 ```
 
@@ -570,13 +625,15 @@ file: <image file>
 **Request:**
 
 - File must be uploaded as `multipart/form-data` with field name `file`
-- Supported formats: JPEG, PNG, GIF, WebP
+- Supported formats: **JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, HEIC, HEIF, AVIF, SVG**
 - Maximum file size: 2MB
 - Image is automatically:
   - Resized to max 256x256 pixels (maintains aspect ratio)
   - Converted to WebP format
   - Transparency converted to white background
 - The `user_id` in the URL must match the authenticated user's ID
+- Mobile browsers that send `application/octet-stream` as the content type are also accepted (the
+  server validates the actual file contents via magic bytes)
 
 **Response (200):**
 
@@ -593,7 +650,7 @@ file: <image file>
 
 - `400` No file provided
 - `400` File too large (max 2MB)
-- `400` Invalid file type (only JPEG, PNG, GIF, WebP allowed)
+- `400` Invalid file type (only JPEG, PNG, GIF, WebP, BMP, TIFF, ICO, HEIC, HEIF, AVIF, SVG allowed)
 - `400` Invalid or corrupted image file
 - `401` Authorization header required / Invalid token / User ID mismatch
 - `500` Failed to save avatar file
@@ -959,6 +1016,7 @@ Authorization: Bearer <access_token>
   "allow_multiple": false,
   "user_vote": "Alice",
   "user_text_answer": null,
+  "text_answers": null,
   "user_streak": 3,
   "longest_streak": 5
 }
@@ -966,6 +1024,27 @@ Authorization: Bearer <access_token>
 
 **Note:** `user_vote` is `null` if not answered, a string for single-select, or an array for
 multi-select when `allow_multiple` is `true`.
+
+For `free_text` questions, `text_answers` contains all submitted answers with user avatar info:
+
+```json
+{
+  "text_answers": [
+    {
+      "display_name": "Alice",
+      "text_answer": "I love coding!",
+      "color_avatar": "#BB8FCE",
+      "avatar_url": "https://api.example.com/uploads/avatars/abc123.webp"
+    },
+    {
+      "display_name": "Bob",
+      "text_answer": "Hiking and photography",
+      "color_avatar": "#4ECDC4",
+      "avatar_url": null
+    }
+  ]
+}
+```
 
 **Errors:**
 
@@ -1020,6 +1099,24 @@ Content-Type: application/json
   "user_answer": "Alice",
   "current_streak": 4,
   "longest_streak": 5
+}
+```
+
+For `free_text` questions, the response also includes `text_answers` with avatar info for each user:
+
+```json
+{
+  "success": true,
+  "question_type": "free_text",
+  "total_votes": 2,
+  "text_answers": [
+    {
+      "display_name": "Alice",
+      "text_answer": "I love coding!",
+      "color_avatar": "#BB8FCE",
+      "avatar_url": "https://api.example.com/uploads/avatars/abc123.webp"
+    }
+  ]
 }
 ```
 
@@ -1108,11 +1205,28 @@ Authorization: Bearer <access_token>
 }
 ```
 
+For `free_text` questions in history, each entry includes `text_answers` with avatar info:
+
+```json
+{
+  "question_id": "uuid-3",
+  "question_type": "free_text",
+  "text_answers": [
+    {
+      "display_name": "Alice",
+      "text_answer": "I love coding!",
+      "color_avatar": "#BB8FCE",
+      "avatar_url": "https://api.example.com/uploads/avatars/abc123.webp"
+    }
+  ]
+}
+```
+
 **Notes:**
 
 - Results are ordered by `question_date` descending (most recent first)
 - Includes both active and inactive questions
-- No authentication required (public endpoint)
+- Authentication required (JWT Bearer token + group membership)
 - Use `skip` and `limit` for pagination
 
 **Errors:**

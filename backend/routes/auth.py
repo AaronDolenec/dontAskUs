@@ -35,6 +35,34 @@ limiter = Limiter(key_func=get_remote_address)
 _DUMMY_HASH = hash_password("dummy-password-for-timing-safety")
 
 
+def _get_account_avatar_and_streak(account: Account, db: Session, base_url: str = "") -> dict:
+    """Aggregate avatar/streak info from an account's memberships.
+    
+    Uses the first membership that has an uploaded avatar, otherwise falls back
+    to the first membership's color_avatar. Streak values are the max across
+    all memberships.
+    """
+    memberships = db.query(User).filter(User.account_id == account.id).all()
+    avatar_url = None
+    color_avatar = None
+    answer_streak = 0
+    longest_answer_streak = 0
+    for m in memberships:
+        # Pick avatar from the first membership that has an uploaded file
+        if not avatar_url and m.avatar_filename:
+            avatar_url = get_avatar_url(m.avatar_filename, base_url)
+        if not color_avatar and m.color_avatar:
+            color_avatar = m.color_avatar
+        answer_streak = max(answer_streak, m.answer_streak or 0)
+        longest_answer_streak = max(longest_answer_streak, m.longest_answer_streak or 0)
+    return {
+        "avatar_url": avatar_url,
+        "color_avatar": color_avatar,
+        "answer_streak": answer_streak,
+        "longest_answer_streak": longest_answer_streak,
+    }
+
+
 @router.post("/register", response_model=AuthTokenResponse)
 @limiter.limit("10/minute")
 def register_account(request: Request, body: AuthRegisterRequest, db: Session = Depends(get_db)):
@@ -61,6 +89,7 @@ def register_account(request: Request, body: AuthRegisterRequest, db: Session = 
         access_token=access_token, refresh_token=refresh_token,
         token_type="bearer", expires_in=USER_JWT_ACCESS_EXPIRE_MINUTES * 60,
         account_id=account.account_id, display_name=account.display_name, email=account.email,
+        avatar_url=None, color_avatar=None, answer_streak=0, longest_answer_streak=0,
     )
 
 
@@ -110,10 +139,14 @@ def login_account(request: Request, body: AuthLoginRequest, db: Session = Depend
     access_token = create_user_jwt(account.id, "access")
     refresh_token = create_user_jwt(account.id, "refresh")
 
+    base_url = str(request.base_url).rstrip('/')
+    extra = _get_account_avatar_and_streak(account, db, base_url)
+
     return AuthTokenResponse(
         access_token=access_token, refresh_token=refresh_token,
         token_type="bearer", expires_in=USER_JWT_ACCESS_EXPIRE_MINUTES * 60,
         account_id=account.account_id, display_name=account.display_name, email=account.email,
+        **extra,
     )
 
 
@@ -129,10 +162,14 @@ def refresh_user_token(request: Request, body: AuthRefreshRequest, db: Session =
     access_token = create_user_jwt(account.id, "access")
     refresh_token = create_user_jwt(account.id, "refresh")
 
+    base_url = str(request.base_url).rstrip('/')
+    extra = _get_account_avatar_and_streak(account, db, base_url)
+
     return AuthTokenResponse(
         access_token=access_token, refresh_token=refresh_token,
         token_type="bearer", expires_in=USER_JWT_ACCESS_EXPIRE_MINUTES * 60,
         account_id=account.account_id, display_name=account.display_name, email=account.email,
+        **extra,
     )
 
 
@@ -153,11 +190,13 @@ def get_me(request: Request, account: Account = Depends(get_current_account), db
                 answer_streak=m.answer_streak or 0, longest_answer_streak=m.longest_answer_streak or 0,
                 joined_at=m.created_at,
             ))
+    extra = _get_account_avatar_and_streak(account, db, base_url)
     return AccountMeResponse(
         account=AccountResponse(
             account_id=account.account_id, email=account.email, display_name=account.display_name,
             is_active=account.is_active, is_verified=account.is_verified,
             created_at=account.created_at, last_login=account.last_login,
+            **extra,
         ),
         groups=groups,
     )

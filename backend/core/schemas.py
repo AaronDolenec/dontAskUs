@@ -54,6 +54,10 @@ class AuthTokenResponse(BaseModel):
     account_id: str
     display_name: str
     email: str
+    avatar_url: Optional[str] = None
+    color_avatar: Optional[str] = None
+    answer_streak: int = 0
+    longest_answer_streak: int = 0
 
 
 class AuthRefreshRequest(BaseModel):
@@ -70,6 +74,10 @@ class AccountResponse(BaseModel):
     is_verified: bool
     created_at: datetime
     last_login: Optional[datetime] = None
+    avatar_url: Optional[str] = None
+    color_avatar: Optional[str] = None
+    answer_streak: int = 0
+    longest_answer_streak: int = 0
 
 
 class AccountGroupMembership(BaseModel):
