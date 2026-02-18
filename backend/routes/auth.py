@@ -346,6 +346,9 @@ def create_group_authenticated(
     while db.query(Group).filter(Group.invite_code == invite_code).first():
         invite_code = generate_invite_code()
     db_group = Group(name=group.name, invite_code=invite_code)
+    # Set per-group rollover hour (~24h after creation ±3h jitter)
+    from services.scheduler import compute_question_hour
+    db_group.question_hour = compute_question_hour(datetime.now(timezone.utc))
     db.add(db_group)
     db.commit()
     db.refresh(db_group)

@@ -286,6 +286,8 @@ class DailyQuestionResponse(BaseModel):
     user_vote: Optional[Union[str, List[str]]] = None
     user_text_answer: Optional[str] = None
     text_answers: Optional[List[dict]] = None  # [{"display_name": "...", "text_answer": "..."}] for free_text
+    answer_details: Optional[List[dict]] = None  # [{"display_name": "...", "answer": "...", ...}] who answered what
+    featured_member: Optional[str] = None  # Display name of {member} placeholder member
     user_streak: int = 0
     longest_streak: int = 0
     # Deprecated fields (kept for backward compatibility):

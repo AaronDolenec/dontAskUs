@@ -42,6 +42,11 @@ def _default_templates() -> List[Dict]:
         {"category": "Default", "question_text": "Share a petty thought you have about someone in this room", "question_type": QuestionTypeEnum.FREE_TEXT},
         {"category": "Default", "question_text": "What rumor about you would hurt the most if everyone believed it?", "question_type": QuestionTypeEnum.FREE_TEXT},
         {"category": "Default", "question_text": "Who would secretly enjoy being cancelled?", "question_type": QuestionTypeEnum.MEMBER_CHOICE},
+        # {member} placeholder questions — the placeholder gets replaced with a random group member name at question creation time
+        {"category": "Default", "question_text": "Do you think {member} could beat a bear in a fight?", "option_a_template": "Yes", "option_b_template": "No", "question_type": QuestionTypeEnum.BINARY_VOTE},
+        {"category": "Default", "question_text": "What is {member}'s most annoying habit?", "question_type": QuestionTypeEnum.FREE_TEXT},
+        {"category": "Default", "question_text": "Rate {member}'s fashion sense", "option_a_template": "Fire 🔥", "option_b_template": "Trash 🗑️", "question_type": QuestionTypeEnum.BINARY_VOTE},
+        {"category": "Default", "question_text": "Who would {member} call first in an emergency?", "question_type": QuestionTypeEnum.MEMBER_CHOICE},
     ]
 
 

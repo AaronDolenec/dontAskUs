@@ -666,6 +666,9 @@ async def admin_create_group(
         group = Group(
             name=name, invite_code=invite_code, creator_id=None,
         )
+        # Set per-group rollover hour (~24h after creation ±3h jitter)
+        from services.scheduler import compute_question_hour
+        group.question_hour = compute_question_hour(datetime.now(timezone.utc))
         db.add(group)
         db.commit()
         db.refresh(group)
@@ -753,17 +756,17 @@ async def admin_set_today_question(
     db: Session = Depends(get_db), x_forwarded_for: str = Header(None), request_obj: Request = None,
 ):
     """Regenerate today's question for a group (instance admin only). Deactivates old question, preserving history."""
-    from services.scheduler import create_today_question_for_group
+    from services.scheduler import create_today_question_for_group, get_group_question_day
     import json as _json
 
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
 
-    today = datetime.now(timezone.utc).date()
+    question_day = get_group_question_day(group)
     old_template_id = None
     old_q = db.query(DailyQuestion).filter(
-        and_(DailyQuestion.group_id == group.id, func.date(DailyQuestion.question_date) == today,
+        and_(DailyQuestion.group_id == group.id, func.date(DailyQuestion.question_date) == question_day,
              DailyQuestion.is_active == True)
     ).first()
     if old_q:

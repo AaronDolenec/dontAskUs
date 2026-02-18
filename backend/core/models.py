@@ -112,6 +112,9 @@ class Group(Base):
     creator_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    # Per-group "new day" hour (0-23 UTC). The group's daily question rolls over at this hour.
+    # Computed once at creation: created_at.hour + random offset in [-3, +3], clamped to 0-23.
+    question_hour = Column(Integer, nullable=True)
     # New admin fields
     instance_admin_notes = Column(Text, nullable=True)
     total_sets_created = Column(Integer, default=0)
@@ -191,12 +194,14 @@ class DailyQuestion(Base):
     options = Column(Text, nullable=True)  # JSON-serialized list of answer choices
     question_type = Column(Enum(QuestionTypeEnum), default=QuestionTypeEnum.BINARY_VOTE)
     allow_multiple = Column(Boolean, default=False)
+    featured_member_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # For {member} placeholder questions
     question_date = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     group = relationship("Group", back_populates="daily_questions")
     template = relationship("QuestionTemplate")
+    featured_member = relationship("User", foreign_keys=[featured_member_id])
     votes = relationship("Vote", back_populates="question", cascade="all, delete-orphan")
 
 

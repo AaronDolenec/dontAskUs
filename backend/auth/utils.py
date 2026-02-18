@@ -442,6 +442,33 @@ def get_text_answers(question_id: int, db: Session, base_url: str = "") -> list[
     ]
 
 
+def get_answer_details(question_id: int, db: Session, base_url: str = "") -> list[dict]:
+    """Get all answers for a question with full user info (who answered what).
+    
+    Works for ALL question types. Returns list of dicts with display_name,
+    answer (parsed from JSON if multi-select), text_answer, color_avatar, avatar_url.
+    """
+    from core.models import Vote, User
+    votes = (
+        db.query(Vote.answer, Vote.text_answer, User.display_name, User.color_avatar, User.avatar_filename)
+        .join(User, Vote.user_id == User.id)
+        .filter(Vote.question_id == question_id)
+        .order_by(Vote.voted_at)
+        .all()
+    )
+    results = []
+    for v in votes:
+        answer_value = parse_vote_answer(v.answer)
+        results.append({
+            "display_name": v.display_name,
+            "answer": answer_value,
+            "text_answer": v.text_answer,
+            "color_avatar": v.color_avatar or "#3498db",
+            "avatar_url": get_avatar_url(v.avatar_filename, base_url),
+        })
+    return results
+
+
 # ============= Streak Helpers =============
 
 def get_user_group_streak(user_id: int, group_id: int, db: Session):
