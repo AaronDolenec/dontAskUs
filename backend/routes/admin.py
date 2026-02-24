@@ -30,6 +30,7 @@ from core.models import (
     AdminUser, Account, Group, User, DailyQuestion, Vote,
     QuestionSet, QuestionTemplate, QuestionSetTemplate, GroupQuestionSet,
     AuditLog, QuestionTypeEnum, ApiRequestLog,
+    UserGroupStreak, UserDeviceToken, GroupCustomSet, GroupAnalytics,
 )
 from auth.utils import (
     extract_client_ip, generate_invite_code,
@@ -526,20 +527,44 @@ async def admin_delete_account(
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
     before_state = {"email": account.email, "display_name": account.display_name}
-    # Delete votes for all user memberships
-    memberships = db.query(User).filter(User.account_id == account.id).all()
-    for m in memberships:
-        db.query(Vote).filter(Vote.user_id == m.id).delete()
-    # Cascade will handle User deletions via relationship
-    db.delete(account)
-    db.commit()
-    ip_address = extract_client_ip(request_obj, x_forwarded_for)
-    log_admin_action(
-        admin_id=admin.id, action="DELETE_ACCOUNT", target_type="ACCOUNT",
-        target_id=account_id, before_state=before_state, after_state=None,
-        ip_address=ip_address, reason=None, db=db,
-    )
-    return {"status": "deleted", "email": before_state["email"]}
+    try:
+        memberships = db.query(User).filter(User.account_id == account.id).all()
+        member_ids = [m.id for m in memberships]
+        if member_ids:
+            # Nullify Group.creator_id references
+            db.query(Group).filter(Group.creator_id.in_(member_ids)).update(
+                {Group.creator_id: None}, synchronize_session="fetch")
+            # Nullify DailyQuestion.featured_member_id references
+            db.query(DailyQuestion).filter(DailyQuestion.featured_member_id.in_(member_ids)).update(
+                {DailyQuestion.featured_member_id: None}, synchronize_session="fetch")
+            # Delete GroupCustomSet entries
+            db.query(GroupCustomSet).filter(GroupCustomSet.creator_user_id.in_(member_ids)).delete(
+                synchronize_session="fetch")
+            # Delete UserDeviceToken entries
+            db.query(UserDeviceToken).filter(UserDeviceToken.user_id.in_(member_ids)).delete(
+                synchronize_session="fetch")
+            # Delete UserGroupStreak entries
+            db.query(UserGroupStreak).filter(UserGroupStreak.user_id.in_(member_ids)).delete(
+                synchronize_session="fetch")
+            # Delete votes
+            db.query(Vote).filter(Vote.user_id.in_(member_ids)).delete(
+                synchronize_session="fetch")
+        # Cascade will handle User deletions via relationship
+        db.delete(account)
+        db.commit()
+        ip_address = extract_client_ip(request_obj, x_forwarded_for)
+        log_admin_action(
+            admin_id=admin.id, action="DELETE_ACCOUNT", target_type="ACCOUNT",
+            target_id=account_id, before_state=before_state, after_state=None,
+            ip_address=ip_address, reason=None, db=db,
+        )
+        return {"status": "deleted", "email": before_state["email"]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail="Error deleting account: " + str(e))
 
 
 @router.post("/users", response_model=dict)
@@ -604,7 +629,22 @@ async def admin_delete_user(
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        # Delete user's votes
+        # Nullify Group.creator_id references
+        db.query(Group).filter(Group.creator_id == user_id).update(
+            {Group.creator_id: None}, synchronize_session="fetch")
+        # Nullify DailyQuestion.featured_member_id references
+        db.query(DailyQuestion).filter(DailyQuestion.featured_member_id == user_id).update(
+            {DailyQuestion.featured_member_id: None}, synchronize_session="fetch")
+        # Delete GroupCustomSet entries
+        db.query(GroupCustomSet).filter(GroupCustomSet.creator_user_id == user_id).delete(
+            synchronize_session="fetch")
+        # Delete UserDeviceToken entries
+        db.query(UserDeviceToken).filter(UserDeviceToken.user_id == user_id).delete(
+            synchronize_session="fetch")
+        # Delete UserGroupStreak entries
+        db.query(UserGroupStreak).filter(UserGroupStreak.user_id == user_id).delete(
+            synchronize_session="fetch")
+        # Delete votes
         db.query(Vote).filter(Vote.user_id == user_id).delete()
         db.delete(user)
         db.commit()
@@ -617,7 +657,8 @@ async def admin_delete_user(
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail="Error deleting user: " + str(e))
 
 
 # ============= Group Management =============
@@ -716,19 +757,63 @@ async def admin_delete_group(
         group = db.query(Group).filter(Group.id == group_id).first()
         if not group:
             raise HTTPException(status_code=404, detail="Group not found")
-        db.query(User).filter(User.group_id == group_id).delete()
-        db.query(DailyQuestion).filter(DailyQuestion.group_id == group_id).delete()
-        db.query(GroupQuestionSet).filter(GroupQuestionSet.group_id == group_id).delete()
+        before_state = {"name": group.name, "group_id": group.group_id}
+        member_ids = [u.id for u in db.query(User.id).filter(User.group_id == group_id).all()]
+        if member_ids:
+            # Nullify ALL Group.creator_id refs pointing at these members (across ALL groups)
+            db.query(Group).filter(Group.creator_id.in_(member_ids)).update(
+                {Group.creator_id: None}, synchronize_session="fetch")
+            # Nullify ALL DailyQuestion.featured_member_id refs (across ALL groups)
+            db.query(DailyQuestion).filter(DailyQuestion.featured_member_id.in_(member_ids)).update(
+                {DailyQuestion.featured_member_id: None}, synchronize_session="fetch")
+            # Delete GroupCustomSet entries where these members are creators (across ALL groups)
+            db.query(GroupCustomSet).filter(GroupCustomSet.creator_user_id.in_(member_ids)).delete(
+                synchronize_session="fetch")
+            # Delete device tokens and streaks
+            db.query(UserDeviceToken).filter(UserDeviceToken.user_id.in_(member_ids)).delete(
+                synchronize_session="fetch")
+            db.query(UserGroupStreak).filter(UserGroupStreak.user_id.in_(member_ids)).delete(
+                synchronize_session="fetch")
+        else:
+            db.query(UserGroupStreak).filter(UserGroupStreak.group_id == group_id).delete(
+                synchronize_session="fetch")
+        # Also delete streaks that reference this group from other members
+        db.query(UserGroupStreak).filter(UserGroupStreak.group_id == group_id).delete(
+            synchronize_session="fetch")
+        # Clean up group-level records
+        db.query(GroupCustomSet).filter(GroupCustomSet.group_id == group_id).delete(
+            synchronize_session="fetch")
+        db.query(QuestionSet).filter(QuestionSet.created_by_group_id == group_id).update(
+            {"created_by_group_id": None}, synchronize_session="fetch")
+        db.flush()
+        # Delete votes for all questions in this group
+        question_ids = [q.id for q in db.query(DailyQuestion.id).filter(
+            DailyQuestion.group_id == group_id).all()]
+        if question_ids:
+            db.query(Vote).filter(Vote.question_id.in_(question_ids)).delete(
+                synchronize_session="fetch")
+        # Delete questions, group question sets, analytics, members
+        db.query(DailyQuestion).filter(DailyQuestion.group_id == group_id).delete(
+            synchronize_session="fetch")
+        db.query(GroupQuestionSet).filter(GroupQuestionSet.group_id == group_id).delete(
+            synchronize_session="fetch")
+        db.query(GroupAnalytics).filter(GroupAnalytics.group_id == group_id).delete(
+            synchronize_session="fetch")
+        db.query(User).filter(User.group_id == group_id).delete(
+            synchronize_session="fetch")
         db.delete(group)
         db.commit()
         ip_address = extract_client_ip(request_obj, x_forwarded_for)
         log_admin_action(admin_id=admin.id, action="DELETE_GROUP", target_type="GROUP",
-                         target_id=group_id, before_state={"name": group.name},
+                         target_id=group_id, before_state=before_state,
                          after_state=None, ip_address=ip_address, reason=None, db=db)
         return {"status": "deleted"}
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail="Error deleting group: " + str(e))
 
 
 @router.put("/groups/{group_id}/notes")

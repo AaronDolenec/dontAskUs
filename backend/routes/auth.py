@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from core.config import USER_JWT_ACCESS_EXPIRE_MINUTES, MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES, PASSWORD_RESET_EXPIRE_MINUTES
 from core.database import get_db
-from core.models import Account, User, Group, QuestionSet, GroupQuestionSet, PasswordResetToken, DailyQuestion, Vote, UserGroupStreak, GroupCustomSet, UserDeviceToken
+from core.models import Account, User, Group, QuestionSet, GroupQuestionSet, PasswordResetToken, DailyQuestion, Vote, UserGroupStreak, GroupCustomSet, UserDeviceToken, GroupAnalytics
 from core.schemas import (
     AuthRegisterRequest, AuthLoginRequest, AuthTokenResponse, AuthRefreshRequest,
     AccountResponse, AccountGroupMembership, AccountMeResponse,
@@ -459,30 +459,51 @@ def delete_group(
         raise HTTPException(status_code=403, detail="Only the group creator can delete this group")
 
     group_name = group.name
-    member_ids = [m.id for m in db.query(User).filter(User.group_id == group.id).all()]
+    try:
+        member_ids = [m.id for m in db.query(User).filter(User.group_id == group.id).all()]
 
-    # Clean up records that don't have cascade-delete on the Group relationship
-    # 1. UserGroupStreak records
-    db.query(UserGroupStreak).filter(UserGroupStreak.group_id == group.id).delete()
-    # 2. GroupQuestionSet assignments
-    db.query(GroupQuestionSet).filter(GroupQuestionSet.group_id == group.id).delete()
-    # 3. GroupCustomSet records
-    db.query(GroupCustomSet).filter(GroupCustomSet.group_id == group.id).delete()
-    # 4. UserDeviceToken records for members of this group
-    if member_ids:
-        db.query(UserDeviceToken).filter(UserDeviceToken.user_id.in_(member_ids)).delete(synchronize_session=False)
-    # 5. Nullify QuestionSet.created_by_group_id references
-    db.query(QuestionSet).filter(QuestionSet.created_by_group_id == group.id).update(
-        {"created_by_group_id": None}, synchronize_session=False,
-    )
+        # Clean up ALL FK references to members being deleted (including cross-group refs)
+        if member_ids:
+            # Nullify Group.creator_id for ANY group where these members are creators
+            db.query(Group).filter(Group.creator_id.in_(member_ids)).update(
+                {Group.creator_id: None}, synchronize_session=False)
+            # Nullify DailyQuestion.featured_member_id for ANY question referencing these members
+            db.query(DailyQuestion).filter(DailyQuestion.featured_member_id.in_(member_ids)).update(
+                {DailyQuestion.featured_member_id: None}, synchronize_session=False)
+            # Delete GroupCustomSet entries where these members are creators
+            db.query(GroupCustomSet).filter(GroupCustomSet.creator_user_id.in_(member_ids)).delete(
+                synchronize_session=False)
+            # Delete device tokens
+            db.query(UserDeviceToken).filter(UserDeviceToken.user_id.in_(member_ids)).delete(
+                synchronize_session=False)
+        # Clean up group-level records
+        db.query(UserGroupStreak).filter(UserGroupStreak.group_id == group.id).delete()
+        db.query(GroupQuestionSet).filter(GroupQuestionSet.group_id == group.id).delete()
+        db.query(GroupCustomSet).filter(GroupCustomSet.group_id == group.id).delete()
+        db.query(QuestionSet).filter(QuestionSet.created_by_group_id == group.id).update(
+            {"created_by_group_id": None}, synchronize_session=False,
+        )
+        db.flush()
 
-    # Break circular FK: Group.creator_id → User.id (which is about to be cascade-deleted)
-    group.creator_id = None
-    db.flush()
+        # Delete votes, questions, analytics, members explicitly (avoid SQLAlchemy circular dep)
+        question_ids = [q.id for q in db.query(DailyQuestion.id).filter(
+            DailyQuestion.group_id == group.id).all()]
+        if question_ids:
+            db.query(Vote).filter(Vote.question_id.in_(question_ids)).delete(synchronize_session=False)
+        db.query(DailyQuestion).filter(DailyQuestion.group_id == group.id).delete(synchronize_session=False)
+        db.query(GroupAnalytics).filter(GroupAnalytics.group_id == group.id).delete(synchronize_session=False)
+        db.query(User).filter(User.group_id == group.id).delete(synchronize_session=False)
 
-    # Now delete the group — cascades handle members, daily_questions, analytics
-    db.delete(group)
-    db.commit()
+        # Expire the group object so SQLAlchemy doesn't try to cascade-delete stale children
+        db.expire(group)
+        db.delete(group)
+        db.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logging.exception("Error deleting group %s", group_id)
+        raise HTTPException(status_code=400, detail=f"Error deleting group: {e}")
 
     # Broadcast to any connected WebSocket clients
     try:
