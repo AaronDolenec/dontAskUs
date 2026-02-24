@@ -111,6 +111,18 @@ export default function Layout({ children }: LayoutProps) {
               href="#"
               onClick={e => {
                 e.preventDefault()
+                navigate('/database')
+              }}
+              className={isActive('/database') ? 'active' : ''}
+            >
+              🗄️ Database
+            </a>
+          </li>
+          <li>
+            <a
+              href="#"
+              onClick={e => {
+                e.preventDefault()
                 navigate('/account')
               }}
               className={isActive('/account') ? 'active' : ''}

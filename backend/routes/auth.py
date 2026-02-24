@@ -1,5 +1,6 @@
 """User authentication routes: register, login, refresh, /me, change-password, forgot/reset password, join/create group."""
 
+import asyncio
 import logging
 import secrets
 from datetime import datetime, timezone, timedelta
@@ -27,6 +28,7 @@ from auth.utils import (
     generate_invite_code,
     generate_qr_code,
 )
+from services.ws_manager import manager as ws_manager
 
 router = APIRouter(prefix="/api/auth", tags=["User Auth"])
 limiter = Limiter(key_func=get_remote_address)
@@ -326,6 +328,20 @@ def join_group_authenticated(
     db.refresh(db_user)
     base_url = str(request.base_url).rstrip('/')
     logging.info(f"Account {account.account_id} joined group {group.group_id} as '{display_name}'")
+
+    # Broadcast member_joined to group-level WebSocket clients
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.ensure_future(ws_manager.broadcast_member_event(group.group_id, "member_joined", {
+                "user_id": db_user.user_id,
+                "display_name": db_user.display_name,
+                "color_avatar": db_user.color_avatar,
+                "avatar_url": get_avatar_url(db_user.avatar_filename, base_url),
+            }))
+    except Exception:
+        logging.debug("Could not broadcast member_joined event")
+
     return AccountGroupMembership(
         user_id=db_user.user_id, group_id=group.group_id, group_name=group.name,
         display_name=db_user.display_name, color_avatar=db_user.color_avatar,

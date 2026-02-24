@@ -10,6 +10,7 @@ import Groups from './pages/Groups'
 import QuestionSets from './pages/QuestionSets'
 import AuditLogs from './pages/AuditLogs'
 import ApiLogs from './pages/ApiLogs'
+import DatabaseBrowser from './pages/DatabaseBrowser'
 import Account from './pages/Account'
 import './styles/App.css'
 
@@ -75,6 +76,16 @@ function AppRoutes() {
           <ProtectedRoute>
             <Layout>
               <ApiLogs />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/database"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <DatabaseBrowser />
             </Layout>
           </ProtectedRoute>
         }

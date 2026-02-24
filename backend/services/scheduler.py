@@ -25,8 +25,10 @@ from core.database import SessionLocal
 from core.models import (
     Group, User, DailyQuestion, QuestionSet, QuestionSetTemplate,
     QuestionTemplate, GroupQuestionSet, QuestionTypeEnum, UserDeviceToken,
+    Vote,
 )
 from .push_notifications import push_service
+from .ws_manager import manager as ws_manager
 from auth.utils import get_group_member_names, generate_duos
 
 # ============= Per-Group Day Helpers =============
@@ -125,13 +127,16 @@ def _select_template(db, group, selected_today: set | None = None):
     return (random.choice(available), exhausted) if available else (None, False)
 
 
-def _build_daily_question(db, group, tmpl):
+def _build_daily_question(db, group, tmpl, question_day=None):
     """
     Build a DailyQuestion from a template, generating options as needed.
     Returns the DailyQuestion instance or None if the group can't support the question type.
     
     Supports {member} placeholder in question_text: replaced with a random group member's name.
     The chosen member is stored in featured_member_id.
+    
+    question_day: the group's logical question day (date). Used to set question_date so that
+    queries by date match correctly even when the calendar date differs from the group's day.
     """
     members = db.query(User).filter(User.group_id == group.id).all()
     member_names = [m.display_name for m in members]
@@ -171,6 +176,13 @@ def _build_daily_question(db, group, tmpl):
         option_a = options_list[0]
         option_b = options_list[1] if len(options_list) > 1 else None
 
+    # Build the question_date: use the group's logical question day so date-based queries work
+    if question_day is not None:
+        from datetime import time as dt_time
+        qd = datetime.combine(question_day, dt_time(), tzinfo=timezone.utc)
+    else:
+        qd = datetime.now(timezone.utc)
+
     return DailyQuestion(
         group_id=group.id,
         template_id=tmpl.id,
@@ -182,7 +194,71 @@ def _build_daily_question(db, group, tmpl):
         allow_multiple=getattr(tmpl, "allow_multiple", False),
         is_active=True,
         featured_member_id=featured_member_id,
+        question_date=qd,
     )
+
+
+# ============= Streak / Deactivation Helpers =============
+
+def _deactivate_old_questions(db, group):
+    """Deactivate all previously active questions for a group.
+    
+    Called before creating a new daily question so that only one question
+    is active per group at any time.
+    """
+    old_active = db.query(DailyQuestion).filter(
+        DailyQuestion.group_id == group.id,
+        DailyQuestion.is_active == True,
+    ).all()
+    for q in old_active:
+        q.is_active = False
+    if old_active:
+        db.flush()  # ensure deactivation is visible to subsequent queries
+
+
+def _check_streaks_on_new_question(db, group):
+    """Check streaks when a new question is about to be created.
+    
+    For each member: if the most recent (now-deactivated) question was NOT
+    answered by the member, reset their streak to 0. This means a streak is
+    only broken when a user completely misses a question.
+    """
+    from core.models import UserGroupStreak
+
+    # Find the most recent question that was just deactivated
+    last_question = (
+        db.query(DailyQuestion)
+        .filter(
+            DailyQuestion.group_id == group.id,
+            DailyQuestion.is_active == False,
+        )
+        .order_by(DailyQuestion.question_date.desc(), DailyQuestion.id.desc())
+        .first()
+    )
+    if not last_question:
+        return  # No previous question — nothing to check
+
+    members = db.query(User).filter(User.group_id == group.id).all()
+    for member in members:
+        voted = (
+            db.query(Vote)
+            .filter(Vote.question_id == last_question.id, Vote.user_id == member.id)
+            .first()
+        )
+        if not voted:
+            # User missed the last question — reset their streak
+            streak = (
+                db.query(UserGroupStreak)
+                .filter(
+                    UserGroupStreak.user_id == member.id,
+                    UserGroupStreak.group_id == group.id,
+                )
+                .first()
+            )
+            if streak:
+                streak.current_streak = 0
+            # Sync to User model
+            member.answer_streak = 0
 
 
 # ============= Public API =============
@@ -202,6 +278,10 @@ def create_today_question_for_group(db, group, exclude_template_ids: set | None 
     ).first():
         return existing
 
+    # Deactivate old questions and check streaks before creating the new one
+    _deactivate_old_questions(db, group)
+    _check_streaks_on_new_question(db, group)
+
     tried: set[int] = set(exclude_template_ids) if exclude_template_ids else set()
     for _ in range(20):  # max attempts to find a compatible template
         tmpl, _ = _select_template(db, group, tried)
@@ -209,11 +289,13 @@ def create_today_question_for_group(db, group, exclude_template_ids: set | None 
             return None
         tried.add(tmpl.id)
 
-        dq = _build_daily_question(db, group, tmpl)
+        dq = _build_daily_question(db, group, tmpl, question_day)
         if dq:
             db.add(dq)
             db.commit()
             db.refresh(dq)
+            # Broadcast new question to group-level WS clients
+            _broadcast_new_question_ws(db, group, question_day)
             return dq
 
     return None
@@ -226,6 +308,10 @@ def _process_group_question(db, group, selected_today):
         and_(DailyQuestion.group_id == group.id, func.date(DailyQuestion.question_date) == question_day)
     ).first():
         return
+
+    # Deactivate old questions and check streaks before creating the new one
+    _deactivate_old_questions(db, group)
+    _check_streaks_on_new_question(db, group)
 
     tmpl, exhausted = _select_template(db, group, selected_today)
     if not tmpl:
@@ -240,7 +326,7 @@ def _process_group_question(db, group, selected_today):
             group.group_id, group.creator_id,
         )
 
-    dq = _build_daily_question(db, group, tmpl)
+    dq = _build_daily_question(db, group, tmpl, question_day)
     if not dq:
         logging.warning(
             "Skipping daily question for group %s - not enough members for %s",
@@ -271,9 +357,12 @@ def _run_daily_question_creation(db):
 
     db.commit()
 
-    if push_service.is_enabled() and groups_needing_push:
-        for group, question_day in groups_needing_push:
+    # Broadcast new_question to WebSocket clients and send push notifications
+    for group, question_day in groups_needing_push:
+        _broadcast_new_question_ws(db, group, question_day)
+        if push_service.is_enabled():
             _send_new_question_notification(db, group, question_day)
+            _send_streak_at_risk_reminders(db, group)
 
 
 def create_daily_questions_for_all():
@@ -325,6 +414,100 @@ def _send_new_question_notification(db, group, question_day):
             logging.info("Push notification sent to %d devices for group %s", len(tokens), group.group_id)
     except Exception as e:
         logging.error("Failed to send push notification for group %s: %s", group.group_id, e)
+
+
+def _broadcast_new_question_ws(db, group, question_day):
+    """Broadcast new_question event to all group-level WebSocket clients."""
+    try:
+        question = db.query(DailyQuestion).filter(
+            and_(DailyQuestion.group_id == group.id,
+                 func.date(DailyQuestion.question_date) == question_day,
+                 DailyQuestion.is_active == True)
+        ).first()
+        if not question:
+            return
+
+        options_list = json.loads(question.options) if question.options else []
+
+        # Resolve featured member name
+        featured_member = None
+        if question.featured_member_id:
+            fm = db.query(User).filter(User.id == question.featured_member_id).first()
+            if fm:
+                featured_member = fm.display_name
+
+        question_data = {
+            "question_id": question.question_id,
+            "question_text": question.question_text,
+            "question_type": question.question_type.value,
+            "options": options_list,
+            "question_date": question.question_date.isoformat(),
+            "is_active": True,
+            "allow_multiple": question.allow_multiple,
+            "featured_member": featured_member,
+        }
+
+        # Also build streak_reset data for members whose streaks were just reset
+        from core.models import UserGroupStreak
+        members = db.query(User).filter(User.group_id == group.id).all()
+        streak_resets = []
+        for m in members:
+            s = db.query(UserGroupStreak).filter(
+                UserGroupStreak.user_id == m.id, UserGroupStreak.group_id == group.id
+            ).first()
+            if s:
+                streak_resets.append({
+                    "user_id": m.user_id,
+                    "display_name": m.display_name,
+                    "current_streak": s.current_streak,
+                    "longest_streak": s.longest_streak,
+                })
+
+        asyncio.run(ws_manager.broadcast_new_question(group.group_id, question_data))
+        if streak_resets:
+            asyncio.run(ws_manager.broadcast_streak_update(group.group_id, {
+                "reason": "question_rollover",
+                "members": streak_resets,
+            }))
+        logging.info("WS broadcast new_question for group %s", group.group_id)
+    except Exception as e:
+        logging.error("Failed to broadcast new_question for group %s: %s", group.group_id, e)
+
+
+def _send_streak_at_risk_reminders(db, group):
+    """Send FCM push reminders to members who didn't answer the previous question.
+
+    Called after a new question is created. Members who missed the last question
+    and had a streak > 0 get a 'streak at risk' notification.
+    """
+    try:
+        from core.models import UserGroupStreak
+
+        members = db.query(User).filter(User.group_id == group.id, User.is_suspended == False).all()
+        for member in members:
+            streak = db.query(UserGroupStreak).filter(
+                UserGroupStreak.user_id == member.id, UserGroupStreak.group_id == group.id
+            ).first()
+            # Streak was just reset to 0 — they missed the previous question
+            # But we only remind them if they previously had a streak (longest_streak > 0)
+            if streak and streak.current_streak == 0 and streak.longest_streak > 0:
+                device_tokens = db.query(UserDeviceToken).filter(
+                    UserDeviceToken.user_id == member.id,
+                    UserDeviceToken.is_active == True,
+                ).all()
+                if device_tokens:
+                    tokens = [dt.token for dt in device_tokens]
+                    asyncio.run(
+                        push_service.send_reminder_notification(
+                            tokens=tokens,
+                            group_name=group.name,
+                            streak_count=streak.longest_streak,
+                        )
+                    )
+                    logging.info("Streak-at-risk reminder sent to %s in group %s",
+                                 member.display_name, group.group_id)
+    except Exception as e:
+        logging.error("Failed to send streak reminders for group %s: %s", group.group_id, e)
 
 
 SCHEDULER_CHECK_INTERVAL = 3600  # Check every hour

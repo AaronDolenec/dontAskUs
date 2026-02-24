@@ -1077,3 +1077,141 @@ async def clear_api_request_logs(
                      after_state={"deleted_count": deleted},
                      ip_address=ip_address, reason="Admin cleared API logs", db=db)
     return {"message": f"Cleared {deleted} API log entries"}
+
+
+# ============= DB Browser =============
+
+# Allowlisted tables for safe read-only browsing
+_DB_BROWSER_TABLES = [
+    "accounts", "admin_users", "groups", "users", "daily_questions",
+    "question_templates", "question_sets", "question_set_templates",
+    "group_question_sets", "votes", "user_group_streaks", "group_analytics",
+    "audit_logs", "api_request_logs", "group_custom_sets",
+    "user_device_tokens", "password_reset_tokens", "alembic_version",
+]
+
+
+@router.get("/db/tables")
+async def db_browser_tables(
+    admin: AdminUser = Depends(get_current_admin), db: Session = Depends(get_db),
+):
+    """List all browsable database tables with row counts."""
+    tables = []
+    for table_name in _DB_BROWSER_TABLES:
+        try:
+            row = db.execute(
+                text("SELECT COUNT(*) FROM information_schema.tables WHERE table_name = :t"),
+                {"t": table_name},
+            ).scalar()
+            if not row:
+                continue
+            count = db.execute(text(f'SELECT COUNT(*) FROM "{table_name}"')).scalar()
+            tables.append({"name": table_name, "row_count": count})
+        except Exception:
+            continue
+    return {"tables": tables}
+
+
+@router.get("/db/tables/{table_name}/schema")
+async def db_browser_schema(
+    table_name: str,
+    admin: AdminUser = Depends(get_current_admin), db: Session = Depends(get_db),
+):
+    """Get column information for a table."""
+    if table_name not in _DB_BROWSER_TABLES:
+        raise HTTPException(status_code=400, detail="Table not allowed")
+    rows = db.execute(
+        text(
+            "SELECT column_name, data_type, is_nullable, column_default "
+            "FROM information_schema.columns "
+            "WHERE table_name = :t ORDER BY ordinal_position"
+        ),
+        {"t": table_name},
+    ).fetchall()
+    return {
+        "table": table_name,
+        "columns": [
+            {
+                "name": r[0],
+                "type": r[1],
+                "nullable": r[2] == "YES",
+                "default": r[3],
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/db/tables/{table_name}/rows")
+async def db_browser_rows(
+    table_name: str,
+    admin: AdminUser = Depends(get_current_admin), db: Session = Depends(get_db),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    sort_column: Optional[str] = Query(None),
+    sort_dir: Optional[str] = Query("asc", regex="^(asc|desc)$"),
+    search: Optional[str] = Query(None, description="Search across all text columns"),
+):
+    """Fetch rows from a table with pagination, sorting, and search."""
+    if table_name not in _DB_BROWSER_TABLES:
+        raise HTTPException(status_code=400, detail="Table not allowed")
+
+    # Get text columns for search
+    col_rows = db.execute(
+        text(
+            "SELECT column_name, data_type "
+            "FROM information_schema.columns WHERE table_name = :t ORDER BY ordinal_position"
+        ),
+        {"t": table_name},
+    ).fetchall()
+    columns = [r[0] for r in col_rows]
+    text_cols = [r[0] for r in col_rows if r[1] in (
+        "character varying", "text", "character", "uuid", "inet",
+    )]
+
+    # Validate sort column
+    order_clause = ""
+    if sort_column and sort_column in columns:
+        direction = "DESC" if sort_dir == "desc" else "ASC"
+        order_clause = f'ORDER BY "{sort_column}" {direction} NULLS LAST'
+    elif "id" in columns:
+        order_clause = "ORDER BY id ASC"
+
+    # Build search filter
+    where_clause = ""
+    params: dict = {"lim": limit, "off": offset}
+    if search and text_cols:
+        conditions = []
+        for i, col in enumerate(text_cols):
+            param_key = f"s{i}"
+            conditions.append(f'CAST("{col}" AS TEXT) ILIKE :{param_key}')
+            params[param_key] = f"%{search}%"
+        where_clause = "WHERE " + " OR ".join(conditions)
+
+    count_sql = f'SELECT COUNT(*) FROM "{table_name}" {where_clause}'
+    total = db.execute(text(count_sql), params).scalar()
+
+    data_sql = f'SELECT * FROM "{table_name}" {where_clause} {order_clause} LIMIT :lim OFFSET :off'
+    rows = db.execute(text(data_sql), params).fetchall()
+
+    # Serialize rows
+    serialized = []
+    for row in rows:
+        row_dict = {}
+        for idx, col in enumerate(columns):
+            val = row[idx]
+            if isinstance(val, datetime):
+                val = val.isoformat()
+            elif val is not None and not isinstance(val, (str, int, float, bool)):
+                val = str(val)
+            row_dict[col] = val
+        serialized.append(row_dict)
+
+    return {
+        "table": table_name,
+        "columns": columns,
+        "rows": serialized,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }

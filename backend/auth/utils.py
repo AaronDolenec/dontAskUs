@@ -486,20 +486,39 @@ def get_user_group_streak(user_id: int, group_id: int, db: Session):
 
 
 def update_user_group_streak(user_id: int, group_id: int, db: Session):
-    """Update per-group streak for a user after answering a question."""
-    from datetime import date as date_type
+    """Update per-group streak for a user after answering a question.
+    
+    Streak logic:
+    - Each answered question gives +1 to the streak.
+    - Streaks are only reset when a new question appears and the user
+      didn't answer the previous one (handled by the scheduler).
+    - If the user already answered today's question (re-submit / edit),
+      don't increment again.
+    """
+    from core.models import DailyQuestion
+
     streak = get_user_group_streak(user_id, group_id, db)
-    today = date_type.today()
-    if streak.last_answer_date:
-        last_date = streak.last_answer_date.date()
-        if last_date == today:
-            pass
-        elif (today - last_date).days == 1:
-            streak.current_streak += 1
-        else:
-            streak.current_streak = 1
-    else:
-        streak.current_streak = 1
+
+    # Find the currently active question for this group
+    current_question = db.query(DailyQuestion).filter(
+        DailyQuestion.group_id == group_id,
+        DailyQuestion.is_active == True,
+    ).order_by(DailyQuestion.question_date.desc()).first()
+
+    if not current_question:
+        return
+
+    # Check if this is a new question the user hasn't been credited for yet
+    # We use last_answer_date: if it's before the current question was created,
+    # this is a fresh answer deserving a streak increment.
+    already_credited = False
+    if streak.last_answer_date and current_question.created_at:
+        if streak.last_answer_date >= current_question.created_at:
+            already_credited = True
+
+    if not already_credited:
+        streak.current_streak += 1
+
     if streak.current_streak > streak.longest_streak:
         streak.longest_streak = streak.current_streak
     streak.last_answer_date = datetime.now(timezone.utc)

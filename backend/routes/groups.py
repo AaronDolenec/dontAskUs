@@ -94,12 +94,18 @@ def get_leaderboard_member(
         raise HTTPException(status_code=403, detail="You are not a member of this group")
     members = db.query(User).filter(User.group_id == group.id).all()
     leaderboard = sorted(members, key=lambda x: (x.answer_streak, x.longest_answer_streak), reverse=True)
+    group_streak = max((m.answer_streak for m in members), default=0)
+    group_longest_streak = max((m.longest_answer_streak for m in members), default=0)
     base_url = str(request.base_url).rstrip('/')
-    return [
-        {
-            "display_name": m.display_name, "color_avatar": m.color_avatar,
-            "avatar_url": get_avatar_url(m.avatar_filename, base_url),
-            "answer_streak": m.answer_streak, "longest_answer_streak": m.longest_answer_streak,
-        }
-        for m in leaderboard
-    ]
+    return {
+        "group_streak": group_streak,
+        "group_longest_streak": group_longest_streak,
+        "members": [
+            {
+                "display_name": m.display_name, "color_avatar": m.color_avatar,
+                "avatar_url": get_avatar_url(m.avatar_filename, base_url),
+                "answer_streak": m.answer_streak, "longest_answer_streak": m.longest_answer_streak,
+            }
+            for m in leaderboard
+        ],
+    }

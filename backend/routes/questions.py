@@ -1,5 +1,6 @@
 """Daily questions, voting, answer submission, and history routes."""
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ from auth.utils import (
     get_avatar_url,
 )
 from services.scheduler import create_today_question_for_group, get_group_question_day
+from services.ws_manager import manager as ws_manager
 
 router = APIRouter(prefix="/api", tags=["Questions"])
 limiter = Limiter(key_func=get_remote_address)
@@ -179,6 +181,37 @@ def submit_answer(
     }
     if question.question_type == QuestionTypeEnum.FREE_TEXT:
         response["text_answers"] = get_text_answers(question.id, db, base_url)
+
+    # ── Broadcast real-time updates to WebSocket clients ──
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = None
+
+    vote_ws_data = {
+        "question_id": question.question_id,
+        "option_counts": option_counts,
+        "total_votes": total_votes,
+        "allow_multiple": question.allow_multiple,
+        "options": options_list,
+        "user": {
+            "display_name": user.display_name,
+            "color_avatar": user.color_avatar,
+            "voted": user_answer_value,
+        },
+    }
+    streak_ws_data = {
+        "user_id": user.user_id,
+        "display_name": user.display_name,
+        "current_streak": streak.current_streak,
+        "longest_streak": streak.longest_streak,
+    }
+    if loop and loop.is_running():
+        asyncio.ensure_future(ws_manager.broadcast_vote_update(group.group_id, question.question_id, vote_ws_data))
+        asyncio.ensure_future(ws_manager.broadcast_streak_update(group.group_id, streak_ws_data))
+    else:
+        logging.debug("No running event loop; skipping WS broadcast for vote")
+
     return response
 
 
@@ -247,15 +280,21 @@ def get_leaderboard(request: Request, group_id: str, db: Session = Depends(get_d
         raise HTTPException(status_code=401, detail="Authentication required")
     members = db.query(User).filter(User.group_id == group.id).all()
     leaderboard = sorted(members, key=lambda x: (x.answer_streak, x.longest_answer_streak), reverse=True)
+    group_streak = max((m.answer_streak for m in members), default=0)
+    group_longest_streak = max((m.longest_answer_streak for m in members), default=0)
     base_url = str(request.base_url).rstrip('/')
-    return [
-        {
-            "display_name": m.display_name, "color_avatar": m.color_avatar,
-            "avatar_url": get_avatar_url(m.avatar_filename, base_url),
-            "answer_streak": m.answer_streak, "longest_answer_streak": m.longest_answer_streak,
-        }
-        for m in leaderboard
-    ]
+    return {
+        "group_streak": group_streak,
+        "group_longest_streak": group_longest_streak,
+        "members": [
+            {
+                "display_name": m.display_name, "color_avatar": m.color_avatar,
+                "avatar_url": get_avatar_url(m.avatar_filename, base_url),
+                "answer_streak": m.answer_streak, "longest_answer_streak": m.longest_answer_streak,
+            }
+            for m in leaderboard
+        ],
+    }
 
 
 @router.get("/groups/{group_id}/question-status")
