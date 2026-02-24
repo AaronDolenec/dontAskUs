@@ -888,16 +888,18 @@ Content-Type: application/json
 
 **Authentication:** Required (JWT Bearer token, must be group creator/owner)
 
-Permanently delete a group and all associated data. Only the group creator (owner) can delete
-their group. This action is irreversible.
+Permanently delete a group and all associated data. Only the group creator (owner) can delete their
+group. This action is irreversible.
 
 **What gets deleted:**
+
 - All members (user memberships in this group)
 - All daily questions and votes
 - All streaks and device tokens
 - Group analytics and question set assignments
 
 **What is NOT deleted:**
+
 - Member accounts themselves (only their membership in this group)
 - Question sets created by the group (ownership is cleared, sets become orphaned)
 
