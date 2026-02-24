@@ -58,6 +58,7 @@ class AuthTokenResponse(BaseModel):
     color_avatar: Optional[str] = None
     answer_streak: int = 0
     longest_answer_streak: int = 0
+    login_count: int = 0
 
 
 class AuthRefreshRequest(BaseModel):
@@ -78,6 +79,7 @@ class AccountResponse(BaseModel):
     color_avatar: Optional[str] = None
     answer_streak: int = 0
     longest_answer_streak: int = 0
+    login_count: int = 0
 
 
 class AccountGroupMembership(BaseModel):

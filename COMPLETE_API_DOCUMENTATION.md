@@ -1,7 +1,7 @@
 # dontAskUs - Complete API Documentation
 
 **Base URL:** `http://localhost:8000` (development)  
-**Version:** 1.7.0  
+**Version:** 1.8.0  
 **Last Updated:** February 24, 2026
 
 **IMPORTANT:** All API endpoints require authentication unless explicitly marked as "Public" or "No
@@ -881,6 +881,58 @@ Content-Type: application/json
 
 - `401` Authorization header required / Invalid token
 - `400` Invalid group name
+
+---
+
+### Delete Group
+
+**Authentication:** Required (JWT Bearer token, must be group creator/owner)
+
+Permanently delete a group and all associated data. Only the group creator (owner) can delete
+their group. This action is irreversible.
+
+**What gets deleted:**
+- All members (user memberships in this group)
+- All daily questions and votes
+- All streaks and device tokens
+- Group analytics and question set assignments
+
+**What is NOT deleted:**
+- Member accounts themselves (only their membership in this group)
+- Question sets created by the group (ownership is cleared, sets become orphaned)
+
+```http
+DELETE /api/auth/groups/{group_id}
+Authorization: Bearer <access_token>
+```
+
+**Response (200):**
+
+```json
+{
+  "message": "Group 'My Awesome Group' has been permanently deleted"
+}
+```
+
+**WebSocket Event:** Broadcasts `group_deleted` to all connected group clients:
+
+```json
+{
+  "type": "group_deleted",
+  "timestamp": "2026-02-09T10:00:00Z",
+  "data": {
+    "group_id": "uuid",
+    "group_name": "My Awesome Group"
+  }
+}
+```
+
+**Errors:**
+
+- `401` Authorization header required / Invalid token
+- `403` You are not a member of this group
+- `403` Only the group creator can delete this group
+- `404` Group not found
 
 ---
 
@@ -3697,7 +3749,8 @@ question is created and the previous one is deactivated.
     "user_id": "ghi789-...",
     "display_name": "NewMember",
     "color_avatar": "#4ECDC4",
-    "avatar_url": null
+    "avatar_url": null,
+    "member_count": 5
   }
 }
 ```
@@ -3721,6 +3774,24 @@ refresh the question options if it's a `member_choice` question.
 ```
 
 **App behavior:** Remove member from member list, refresh question if needed.
+
+#### `group_deleted`
+
+**Trigger:** The group creator deletes the group via `DELETE /api/auth/groups/{group_id}`.
+
+```json
+{
+  "type": "group_deleted",
+  "timestamp": "2026-02-24T15:00:00.000Z",
+  "data": {
+    "group_id": "abc123-...",
+    "group_name": "My Awesome Group"
+  }
+}
+```
+
+**App behavior:** Show notification that the group was deleted, navigate user away from group view,
+remove the group from local state/storage.
 
 ---
 
@@ -3901,6 +3972,7 @@ Then apply subsequent WebSocket events on top of the synced state.
 | `streak_update` (rollover) | Refresh entire leaderboard, show streak-lost animations for reset users   |
 | `member_joined`            | Add to member list, show join toast, potentially refresh question options |
 | `member_left`              | Remove from member list, potentially refresh question options             |
+| `group_deleted`            | Show deletion notice, navigate away, remove group from local state        |
 
 ---
 

@@ -1133,6 +1133,44 @@ check "POST .../private (non-creator → 403)" "403" "$code" "$body"
 
 # ════════════════════════════════════════════════════════════
 echo ""
+echo -e "${BOLD}[15] Delete Group (Owner)${NC}"
+# ════════════════════════════════════════════════════════════
+
+# Create a temporary group to delete
+echo -e "    ${CYAN}DELETE /api/auth/groups/{group_id} (owner deletes group)${NC}"
+resp=$(req POST "$BASE/api/auth/groups/create" \
+  -H "Authorization: Bearer $USER_ACCESS" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"DeleteMe_${TIMESTAMP}\"}")
+code=$(echo "$resp" | head -1)
+body=$(echo "$resp" | tail -n +2)
+DELETE_GROUP_ID=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('group_id',''))" 2>/dev/null)
+
+if [ -n "$DELETE_GROUP_ID" ]; then
+    # Non-owner trying to delete (should fail)
+    resp=$(req DELETE "$BASE/api/auth/groups/$DELETE_GROUP_ID" \
+      -H "Authorization: Bearer $USER2_ACCESS")
+    code=$(echo "$resp" | head -1)
+    body=$(echo "$resp" | tail -n +2)
+    check "DELETE /api/auth/groups/{group_id} (non-owner → 403)" "403" "$code" "$body"
+
+    # Owner deletes
+    resp=$(req DELETE "$BASE/api/auth/groups/$DELETE_GROUP_ID" \
+      -H "Authorization: Bearer $USER_ACCESS")
+    code=$(echo "$resp" | head -1)
+    body=$(echo "$resp" | tail -n +2)
+    check "DELETE /api/auth/groups/{group_id} (owner)" "200" "$code" "$body"
+
+    # Try to get deleted group (should 404)
+    resp=$(req GET "$BASE/api/groups/$DELETE_GROUP_ID/info" \
+      -H "Authorization: Bearer $USER_ACCESS")
+    code=$(echo "$resp" | head -1)
+    body=$(echo "$resp" | tail -n +2)
+    check "GET /api/groups/{group_id}/info (deleted → 404)" "404" "$code" "$body"
+fi
+
+# ════════════════════════════════════════════════════════════
+echo ""
 echo -e "${BOLD}${CYAN}══════════════════════════════════════════════════════════════${NC}"
 echo -e "${BOLD}  TEST RESULTS${NC}"
 echo -e "${BOLD}${CYAN}══════════════════════════════════════════════════════════════${NC}"

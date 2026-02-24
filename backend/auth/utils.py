@@ -244,7 +244,10 @@ def validate_image_magic_bytes(file_bytes: bytes) -> Optional[str]:
 def process_avatar_image(file_bytes: bytes) -> bytes:
     """Process uploaded avatar: validate, resize to 256x256 max, convert to WebP."""
     try:
+        # Guard against decompression bombs (huge images)
+        Image.MAX_IMAGE_PIXELS = 25_000_000  # ~5000x5000 max
         img = Image.open(io.BytesIO(file_bytes))
+        img.load()  # Force full decode to catch corrupt data early
         if img.mode in ('RGBA', 'LA', 'P'):
             background = Image.new('RGB', img.size, (255, 255, 255))
             if img.mode == 'P':
@@ -257,8 +260,10 @@ def process_avatar_image(file_bytes: bytes) -> bytes:
         output = io.BytesIO()
         img.save(output, format='WEBP', quality=85, method=6)
         return output.getvalue()
+    except Image.DecompressionBombError:
+        raise ValueError("Image is too large (too many pixels). Please use a smaller image.")
     except Exception as e:
-        logging.error(f"Error processing avatar image: {e}")
+        logging.error(f"Error processing avatar image: {type(e).__name__}: {e}")
         raise ValueError("Invalid or corrupted image file")
 
 

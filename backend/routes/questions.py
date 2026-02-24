@@ -15,6 +15,7 @@ from core.database import get_db
 from core.models import (
     Group, User, DailyQuestion, Vote, QuestionTemplate,
     QuestionSet, QuestionSetTemplate, GroupQuestionSet, QuestionTypeEnum,
+    UserGroupStreak,
 )
 from core.schemas import DailyQuestionResponse, AnswerSubmissionCreate
 from auth.utils import (
@@ -64,8 +65,14 @@ def get_todays_question(request: Request, group_id: str = PathParam(...), db: Se
     total_votes = db.query(func.count(Vote.id)).filter(Vote.question_id == question.id).scalar() or 0
 
     user_vote = get_user_vote(user.id, question.id, db)
-    user_streak = user.answer_streak
-    longest_streak = user.longest_answer_streak
+
+    # Read authoritative streak from UserGroupStreak table
+    gs = db.query(UserGroupStreak).filter(
+        UserGroupStreak.user_id == user.id,
+        UserGroupStreak.group_id == group.id,
+    ).first()
+    user_streak = gs.current_streak if gs else (user.answer_streak or 0)
+    longest_streak = gs.longest_streak if gs else (user.longest_answer_streak or 0)
 
     # For free_text questions, include all text answers so users can see what everyone wrote
     text_answers = None
@@ -279,10 +286,27 @@ def get_leaderboard(request: Request, group_id: str, db: Session = Depends(get_d
     if not user:
         raise HTTPException(status_code=401, detail="Authentication required")
     members = db.query(User).filter(User.group_id == group.id).all()
-    leaderboard = sorted(members, key=lambda x: (x.answer_streak, x.longest_answer_streak), reverse=True)
-    group_streak = max((m.answer_streak for m in members), default=0)
-    group_longest_streak = max((m.longest_answer_streak for m in members), default=0)
     base_url = str(request.base_url).rstrip('/')
+
+    # Read authoritative streak data from UserGroupStreak table
+    streak_map: dict[int, tuple[int, int]] = {}
+    for m in members:
+        gs = db.query(UserGroupStreak).filter(
+            UserGroupStreak.user_id == m.id,
+            UserGroupStreak.group_id == group.id,
+        ).first()
+        if gs:
+            streak_map[m.id] = (gs.current_streak, gs.longest_streak)
+        else:
+            streak_map[m.id] = (m.answer_streak or 0, m.longest_answer_streak or 0)
+
+    leaderboard = sorted(
+        members,
+        key=lambda x: (streak_map.get(x.id, (0, 0))[0], streak_map.get(x.id, (0, 0))[1]),
+        reverse=True,
+    )
+    group_streak = max((streak_map.get(m.id, (0, 0))[0] for m in members), default=0)
+    group_longest_streak = max((streak_map.get(m.id, (0, 0))[1] for m in members), default=0)
     return {
         "group_streak": group_streak,
         "group_longest_streak": group_longest_streak,
@@ -290,7 +314,8 @@ def get_leaderboard(request: Request, group_id: str, db: Session = Depends(get_d
             {
                 "display_name": m.display_name, "color_avatar": m.color_avatar,
                 "avatar_url": get_avatar_url(m.avatar_filename, base_url),
-                "answer_streak": m.answer_streak, "longest_answer_streak": m.longest_answer_streak,
+                "answer_streak": streak_map.get(m.id, (0, 0))[0],
+                "longest_answer_streak": streak_map.get(m.id, (0, 0))[1],
             }
             for m in leaderboard
         ],

@@ -8,7 +8,7 @@ from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from core.database import get_db
-from core.models import Account, Group, User, QuestionSet, GroupQuestionSet
+from core.models import Account, Group, User, QuestionSet, GroupQuestionSet, UserGroupStreak
 from core.schemas import GroupResponsePublic
 from auth.utils import (
     get_group_by_id, get_current_account, get_membership, get_avatar_url,
@@ -69,13 +69,27 @@ def get_group_members(
         raise HTTPException(status_code=403, detail="You are not a member of this group")
     members = db.query(User).filter(User.group_id == group.id).all()
     base_url = str(request.base_url).rstrip('/')
+
+    # Read authoritative streak data from UserGroupStreak table
+    streak_map: dict[int, tuple[int, int]] = {}
+    for m in members:
+        gs = db.query(UserGroupStreak).filter(
+            UserGroupStreak.user_id == m.id,
+            UserGroupStreak.group_id == group.id,
+        ).first()
+        if gs:
+            streak_map[m.id] = (gs.current_streak, gs.longest_streak)
+        else:
+            streak_map[m.id] = (m.answer_streak or 0, m.longest_answer_streak or 0)
+
     return [
         {
             "user_id": m.user_id, "display_name": m.display_name,
             "color_avatar": m.color_avatar,
             "avatar_url": get_avatar_url(m.avatar_filename, base_url),
-            "created_at": m.created_at, "answer_streak": m.answer_streak,
-            "longest_answer_streak": m.longest_answer_streak,
+            "created_at": m.created_at,
+            "answer_streak": streak_map.get(m.id, (0, 0))[0],
+            "longest_answer_streak": streak_map.get(m.id, (0, 0))[1],
         }
         for m in members
     ]
@@ -93,10 +107,27 @@ def get_leaderboard_member(
     if not membership:
         raise HTTPException(status_code=403, detail="You are not a member of this group")
     members = db.query(User).filter(User.group_id == group.id).all()
-    leaderboard = sorted(members, key=lambda x: (x.answer_streak, x.longest_answer_streak), reverse=True)
-    group_streak = max((m.answer_streak for m in members), default=0)
-    group_longest_streak = max((m.longest_answer_streak for m in members), default=0)
     base_url = str(request.base_url).rstrip('/')
+
+    # Read authoritative streak data from UserGroupStreak table
+    streak_map: dict[int, tuple[int, int]] = {}
+    for m in members:
+        gs = db.query(UserGroupStreak).filter(
+            UserGroupStreak.user_id == m.id,
+            UserGroupStreak.group_id == group.id,
+        ).first()
+        if gs:
+            streak_map[m.id] = (gs.current_streak, gs.longest_streak)
+        else:
+            streak_map[m.id] = (m.answer_streak or 0, m.longest_answer_streak or 0)
+
+    leaderboard = sorted(
+        members,
+        key=lambda x: (streak_map.get(x.id, (0, 0))[0], streak_map.get(x.id, (0, 0))[1]),
+        reverse=True,
+    )
+    group_streak = max((streak_map.get(m.id, (0, 0))[0] for m in members), default=0)
+    group_longest_streak = max((streak_map.get(m.id, (0, 0))[1] for m in members), default=0)
     return {
         "group_streak": group_streak,
         "group_longest_streak": group_longest_streak,
@@ -104,7 +135,8 @@ def get_leaderboard_member(
             {
                 "display_name": m.display_name, "color_avatar": m.color_avatar,
                 "avatar_url": get_avatar_url(m.avatar_filename, base_url),
-                "answer_streak": m.answer_streak, "longest_answer_streak": m.longest_answer_streak,
+                "answer_streak": streak_map.get(m.id, (0, 0))[0],
+                "longest_answer_streak": streak_map.get(m.id, (0, 0))[1],
             }
             for m in leaderboard
         ],

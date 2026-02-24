@@ -222,6 +222,9 @@ def _check_streaks_on_new_question(db, group):
     For each member: if the most recent (now-deactivated) question was NOT
     answered by the member, reset their streak to 0. This means a streak is
     only broken when a user completely misses a question.
+    
+    Also syncs longest_streak from UserGroupStreak to User.longest_answer_streak
+    for ALL members (voters and non-voters) to keep the data consistent.
     """
     from core.models import UserGroupStreak
 
@@ -245,20 +248,30 @@ def _check_streaks_on_new_question(db, group):
             .filter(Vote.question_id == last_question.id, Vote.user_id == member.id)
             .first()
         )
+
+        streak = (
+            db.query(UserGroupStreak)
+            .filter(
+                UserGroupStreak.user_id == member.id,
+                UserGroupStreak.group_id == group.id,
+            )
+            .first()
+        )
+
         if not voted:
             # User missed the last question — reset their streak
-            streak = (
-                db.query(UserGroupStreak)
-                .filter(
-                    UserGroupStreak.user_id == member.id,
-                    UserGroupStreak.group_id == group.id,
-                )
-                .first()
-            )
             if streak:
                 streak.current_streak = 0
-            # Sync to User model
             member.answer_streak = 0
+
+        # Always sync longest_streak from UserGroupStreak → User model
+        # so leaderboard/members endpoints return correct data
+        if streak:
+            member.longest_answer_streak = max(
+                streak.longest_streak or 0,
+                member.longest_answer_streak or 0,
+            )
+            member.answer_streak = streak.current_streak
 
 
 # ============= Public API =============
@@ -277,6 +290,33 @@ def create_today_question_for_group(db, group, exclude_template_ids: set | None 
              DailyQuestion.is_active == True)
     ).first():
         return existing
+
+    # Guard: don't create a new question if the last one was created less than 20h ago.
+    # This prevents rapid question cycling when question_hour jitter causes day boundaries
+    # to shift (e.g. group created at 14:00, question_hour set to 12:00, so the "day"
+    # immediately rolls over and creates a second question).
+    MIN_QUESTION_GAP_HOURS = 20
+    last_question = (
+        db.query(DailyQuestion)
+        .filter(DailyQuestion.group_id == group.id)
+        .order_by(DailyQuestion.created_at.desc())
+        .first()
+    )
+    if last_question and last_question.created_at:
+        # Ensure timezone-aware comparison (DB may store naive datetimes)
+        created = last_question.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        hours_since_last = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+        if hours_since_last < MIN_QUESTION_GAP_HOURS:
+            logging.debug(
+                "Skipping question creation for group %s — last question was %.1fh ago (min %dh)",
+                group.group_id, hours_since_last, MIN_QUESTION_GAP_HOURS,
+            )
+            # Return the last question if it's still active, otherwise None
+            if last_question.is_active:
+                return last_question
+            return None
 
     # Deactivate old questions and check streaks before creating the new one
     _deactivate_old_questions(db, group)
@@ -308,6 +348,27 @@ def _process_group_question(db, group, selected_today):
         and_(DailyQuestion.group_id == group.id, func.date(DailyQuestion.question_date) == question_day)
     ).first():
         return
+
+    # Guard: don't create a new question if the last one was created less than 20h ago
+    MIN_QUESTION_GAP_HOURS = 20
+    last_question = (
+        db.query(DailyQuestion)
+        .filter(DailyQuestion.group_id == group.id)
+        .order_by(DailyQuestion.created_at.desc())
+        .first()
+    )
+    if last_question and last_question.created_at:
+        # Ensure timezone-aware comparison (DB may store naive datetimes)
+        created = last_question.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        hours_since_last = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+        if hours_since_last < MIN_QUESTION_GAP_HOURS:
+            logging.debug(
+                "Scheduler: skipping group %s — last question was %.1fh ago (min %dh)",
+                group.group_id, hours_since_last, MIN_QUESTION_GAP_HOURS,
+            )
+            return
 
     # Deactivate old questions and check streaks before creating the new one
     _deactivate_old_questions(db, group)

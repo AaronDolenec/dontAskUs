@@ -40,6 +40,7 @@ class Account(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     last_login = Column(DateTime, nullable=True)
     last_login_ip = Column(INET, nullable=True)
+    login_count = Column(Integer, default=0)  # Total successful logins
     login_attempt_count = Column(Integer, default=0)
     last_login_attempt = Column(DateTime, nullable=True)
     is_locked_until = Column(DateTime, nullable=True)

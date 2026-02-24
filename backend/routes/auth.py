@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from core.config import USER_JWT_ACCESS_EXPIRE_MINUTES, MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES, PASSWORD_RESET_EXPIRE_MINUTES
 from core.database import get_db
-from core.models import Account, User, Group, QuestionSet, GroupQuestionSet, PasswordResetToken
+from core.models import Account, User, Group, QuestionSet, GroupQuestionSet, PasswordResetToken, DailyQuestion, Vote, UserGroupStreak, GroupCustomSet, UserDeviceToken
 from core.schemas import (
     AuthRegisterRequest, AuthLoginRequest, AuthTokenResponse, AuthRefreshRequest,
     AccountResponse, AccountGroupMembership, AccountMeResponse,
@@ -42,7 +42,7 @@ def _get_account_avatar_and_streak(account: Account, db: Session, base_url: str 
     
     Uses the first membership that has an uploaded avatar, otherwise falls back
     to the first membership's color_avatar. Streak values are the max across
-    all memberships.
+    all memberships (read from UserGroupStreak for accuracy).
     """
     memberships = db.query(User).filter(User.account_id == account.id).all()
     avatar_url = None
@@ -55,8 +55,17 @@ def _get_account_avatar_and_streak(account: Account, db: Session, base_url: str 
             avatar_url = get_avatar_url(m.avatar_filename, base_url)
         if not color_avatar and m.color_avatar:
             color_avatar = m.color_avatar
-        answer_streak = max(answer_streak, m.answer_streak or 0)
-        longest_answer_streak = max(longest_answer_streak, m.longest_answer_streak or 0)
+        # Read authoritative streak from UserGroupStreak table
+        gs = db.query(UserGroupStreak).filter(
+            UserGroupStreak.user_id == m.id,
+            UserGroupStreak.group_id == m.group_id,
+        ).first()
+        if gs:
+            answer_streak = max(answer_streak, gs.current_streak or 0)
+            longest_answer_streak = max(longest_answer_streak, gs.longest_streak or 0)
+        else:
+            answer_streak = max(answer_streak, m.answer_streak or 0)
+            longest_answer_streak = max(longest_answer_streak, m.longest_answer_streak or 0)
     return {
         "avatar_url": avatar_url,
         "color_avatar": color_avatar,
@@ -92,6 +101,7 @@ def register_account(request: Request, body: AuthRegisterRequest, db: Session = 
         token_type="bearer", expires_in=USER_JWT_ACCESS_EXPIRE_MINUTES * 60,
         account_id=account.account_id, display_name=account.display_name, email=account.email,
         avatar_url=None, color_avatar=None, answer_streak=0, longest_answer_streak=0,
+        login_count=0,
     )
 
 
@@ -134,9 +144,12 @@ def login_account(request: Request, body: AuthLoginRequest, db: Session = Depend
     account.is_locked_until = None
     account.last_login = datetime.now(timezone.utc)
     account.last_login_ip = request.client.host if request.client else None
+    account.login_count = (account.login_count or 0) + 1
+    db.flush()
     db.commit()
+    db.refresh(account)
 
-    logging.info(f"Account login: {account.account_id} ({account.email})")
+    logging.info(f"Account login: {account.account_id} ({account.email}) [login #{account.login_count}]")
 
     access_token = create_user_jwt(account.id, "access")
     refresh_token = create_user_jwt(account.id, "refresh")
@@ -148,6 +161,7 @@ def login_account(request: Request, body: AuthLoginRequest, db: Session = Depend
         access_token=access_token, refresh_token=refresh_token,
         token_type="bearer", expires_in=USER_JWT_ACCESS_EXPIRE_MINUTES * 60,
         account_id=account.account_id, display_name=account.display_name, email=account.email,
+        login_count=account.login_count or 0,
         **extra,
     )
 
@@ -171,6 +185,7 @@ def refresh_user_token(request: Request, body: AuthRefreshRequest, db: Session =
         access_token=access_token, refresh_token=refresh_token,
         token_type="bearer", expires_in=USER_JWT_ACCESS_EXPIRE_MINUTES * 60,
         account_id=account.account_id, display_name=account.display_name, email=account.email,
+        login_count=account.login_count or 0,
         **extra,
     )
 
@@ -198,6 +213,7 @@ def get_me(request: Request, account: Account = Depends(get_current_account), db
             account_id=account.account_id, email=account.email, display_name=account.display_name,
             is_active=account.is_active, is_verified=account.is_verified,
             created_at=account.created_at, last_login=account.last_login,
+            login_count=account.login_count or 0,
             **extra,
         ),
         groups=groups,
@@ -330,6 +346,7 @@ def join_group_authenticated(
     logging.info(f"Account {account.account_id} joined group {group.group_id} as '{display_name}'")
 
     # Broadcast member_joined to group-level WebSocket clients
+    member_count = db.query(func.count(User.id)).filter(User.group_id == group.id).scalar() or 0
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
@@ -338,9 +355,18 @@ def join_group_authenticated(
                 "display_name": db_user.display_name,
                 "color_avatar": db_user.color_avatar,
                 "avatar_url": get_avatar_url(db_user.avatar_filename, base_url),
+                "member_count": member_count,
             }))
-    except Exception:
-        logging.debug("Could not broadcast member_joined event")
+        else:
+            asyncio.run(ws_manager.broadcast_member_event(group.group_id, "member_joined", {
+                "user_id": db_user.user_id,
+                "display_name": db_user.display_name,
+                "color_avatar": db_user.color_avatar,
+                "avatar_url": get_avatar_url(db_user.avatar_filename, base_url),
+                "member_count": member_count,
+            }))
+    except Exception as e:
+        logging.warning("Could not broadcast member_joined event for group %s: %s", group.group_id, e)
 
     return AccountGroupMembership(
         user_id=db_user.user_id, group_id=group.group_id, group_name=group.name,
@@ -401,3 +427,72 @@ def create_group_authenticated(
         "invite_code": db_group.invite_code,
         "created_at": db_group.created_at.isoformat(), "member_count": 1,
     }
+
+
+@router.delete("/groups/{group_id}")
+@limiter.limit("10/minute")
+def delete_group(
+    request: Request, group_id: str,
+    account: Account = Depends(get_current_account), db: Session = Depends(get_db),
+):
+    """Delete a group. Only the group creator (owner) can delete their group.
+    
+    This permanently deletes the group and all associated data:
+    - All members (user memberships)
+    - All daily questions and votes
+    - All streaks, device tokens, and question set assignments
+    - Group analytics
+    
+    Member accounts themselves are NOT deleted, only their membership in this group.
+    """
+    group = db.query(Group).filter(Group.group_id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    # Verify the caller is the group creator
+    membership = db.query(User).filter(
+        and_(User.account_id == account.id, User.group_id == group.id)
+    ).first()
+    if not membership:
+        raise HTTPException(status_code=403, detail="You are not a member of this group")
+    if group.creator_id != membership.id:
+        raise HTTPException(status_code=403, detail="Only the group creator can delete this group")
+
+    group_name = group.name
+    member_ids = [m.id for m in db.query(User).filter(User.group_id == group.id).all()]
+
+    # Clean up records that don't have cascade-delete on the Group relationship
+    # 1. UserGroupStreak records
+    db.query(UserGroupStreak).filter(UserGroupStreak.group_id == group.id).delete()
+    # 2. GroupQuestionSet assignments
+    db.query(GroupQuestionSet).filter(GroupQuestionSet.group_id == group.id).delete()
+    # 3. GroupCustomSet records
+    db.query(GroupCustomSet).filter(GroupCustomSet.group_id == group.id).delete()
+    # 4. UserDeviceToken records for members of this group
+    if member_ids:
+        db.query(UserDeviceToken).filter(UserDeviceToken.user_id.in_(member_ids)).delete(synchronize_session=False)
+    # 5. Nullify QuestionSet.created_by_group_id references
+    db.query(QuestionSet).filter(QuestionSet.created_by_group_id == group.id).update(
+        {"created_by_group_id": None}, synchronize_session=False,
+    )
+
+    # Break circular FK: Group.creator_id → User.id (which is about to be cascade-deleted)
+    group.creator_id = None
+    db.flush()
+
+    # Now delete the group — cascades handle members, daily_questions, analytics
+    db.delete(group)
+    db.commit()
+
+    # Broadcast to any connected WebSocket clients
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.ensure_future(ws_manager.broadcast_to_group(
+                group_id, {"type": "group_deleted", "group_id": group_id, "group_name": group_name},
+            ))
+    except Exception:
+        logging.debug("Could not broadcast group_deleted event")
+
+    logging.info(f"Account {account.account_id} deleted group {group_id} ('{group_name}')")
+    return {"message": f"Group '{group_name}' has been permanently deleted"}

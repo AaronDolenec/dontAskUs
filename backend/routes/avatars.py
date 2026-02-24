@@ -46,8 +46,9 @@ async def upload_avatar(request: Request, user_id: str, file: UploadFile = File(
 
     try:
         processed_bytes = process_avatar_image(file_bytes)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except (ValueError, OSError, Exception) as e:
+        logging.warning(f"Avatar processing failed for user {user_id}: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=400, detail="Invalid or corrupted image file. Please try a different image.")
 
     filename = f"{user.user_id}_{secrets.token_hex(8)}.webp"
     filepath = AVATAR_UPLOAD_DIR / filename
