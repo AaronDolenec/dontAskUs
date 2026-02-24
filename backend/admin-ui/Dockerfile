@@ -7,7 +7,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 
 # Install dependencies
-RUN npm install --legacy-peer-deps
+RUN --mount=type=cache,target=/root/.npm npm install --legacy-peer-deps
 
 # Copy the entire source
 COPY . .
