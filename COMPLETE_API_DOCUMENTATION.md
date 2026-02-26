@@ -2,7 +2,7 @@
 
 **Base URL:** `http://localhost:8000` (development)  
 **Version:** 1.8.0  
-**Last Updated:** February 24, 2026
+**Last Updated:** February 26, 2026
 
 **IMPORTANT:** All API endpoints require authentication unless explicitly marked as "Public" or "No
 Auth". After registration or login, include the access token in the `Authorization: Bearer <token>`
@@ -10,13 +10,42 @@ header for all requests.
 
 ---
 
+### Verify Email
+
+**Authentication:** None (public endpoint)
+
+Complete registration when email verification is required. Provide the email address used during
+signup along with the six-digit verification code sent to that address. This endpoint is rarely used
+when the admin toggle `require_email_verification` is off; in that case it acts as a no-op.
+
+```http
+POST /api/auth/verify-email
+Content-Type: application/json
+
+{
+  "email": "alice@example.com",
+  "code": "123456"
+}
+```
+
+**Response (200):**
+
+```json
+{ "message": "Email verified successfully" }
+```
+
+**Errors:**
+
+- `400` Invalid email or code (expired/used/wrong)
+
 ## Table of Contents
 
 1. [Overview](#overview)
 2. [Authentication](#authentication)
 3. [User Auth Endpoints](#user-auth-endpoints)
 4. [Account Recovery](#account-recovery)
-5. [Avatar Upload Endpoints](#avatar-upload-endpoints)
+5. [Avatar Upload Endpoints](#avatar-upload-endpoints) 5.1
+   [User Settings & Preferences](#user-settings--preferences)
 6. [Group Endpoints](#group-endpoints)
 7. [Daily Questions & Voting](#daily-questions--voting)
    - [`{member}` Placeholder — Personalized Questions](#member-placeholder--personalized-questions)
@@ -281,6 +310,15 @@ All responses include:
 
 ## User Auth Endpoints
 
+> **Configurable behavior:** An admin may require email verification for new registrations. When
+> this setting is enabled, registered accounts are marked unverified, and users must call
+> `POST /api/auth/verify-email` using the code sent to their inbox before they can login. See
+> "Admin: Application Settings" for details.
+>
+> **Cleanup note:** any account that remains unverified for more than 24 hours is automatically
+> deleted by the server's background scheduler. This helps prevent bots from creating large numbers
+> of inactive accounts.
+
 ### Register
 
 **Authentication:** None (public endpoint)
@@ -332,6 +370,12 @@ Content-Type: application/json
 - `400` Password too weak (min 8 chars, uppercase, lowercase, digit)
 - `409` Email already registered
 
+> **Behavior note:** If the **Require email verification** setting in the admin panel is enabled,
+> the server will not return JWT tokens from this endpoint. Instead you'll receive a message
+> instructing the user to verify their email. A six‑digit verification code is emailed to the
+> provided address; the code must be submitted via `POST /api/auth/verify-email` before the user can
+> log in.
+
 ---
 
 ### Login
@@ -339,6 +383,9 @@ Content-Type: application/json
 **Authentication:** None (public endpoint)
 
 Authenticate with email and password.
+
+> **Note:** If email verification is required (admin setting) and the account has not been verified
+> yet, this endpoint will respond with `403` and `"Email address not verified"`.
 
 ```http
 POST /api/auth/login
@@ -836,6 +883,131 @@ function getAvatarDisplay(user) {
   }
 }
 ```
+
+---
+
+## User Settings & Preferences
+
+These endpoints allow a user to manage per-group settings such as display name and notification
+preferences. Every route under `/api/users/{user_id}` requires the JWT access token for the matching
+`user_id`.
+
+### Get Current Membership Settings
+
+**Authentication:** Required (JWT Bearer token - must match `user_id` in URL)
+
+Retrieve the membership-specific settings for the authenticated user.
+
+```http
+GET /api/users/{user_id}/settings
+Authorization: Bearer <access_token>
+```
+
+**Response (200):**
+
+```json
+{
+  "user_id": "abcd-1234",
+  "display_name": "Alice",
+  "avatar_filename": "alice.webp",
+  "email_on_new_question": false,
+  "email_on_reminder": true,
+  "push_notifications_enabled": false
+}
+```
+
+`push_notifications_enabled` is a new flag (default `false`) indicating whether the user has opted
+in to receive system-level Firebase push notifications. It is handled separately from device token
+registration.
+
+### Update Display Name
+
+**Authentication:** Required (JWT Bearer token - must match `user_id` in URL)
+
+Change the user's display name within a group. Names must be unique within the group and between 1
+and 50 characters long.
+
+```http
+PUT /api/users/{user_id}/display-name
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "display_name": "NewName"
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "message": "Display name updated",
+  "display_name": "NewName"
+}
+```
+
+**Errors:** `400` invalid name, `409` name already taken in group.
+
+### Update Email Notification Preferences
+
+**Authentication:** Required (JWT Bearer token - must match `user_id` in URL)
+
+Toggle email delivery for new-question notifications and reminder emails. Both options default to
+`false` for new memberships.
+
+```http
+PUT /api/users/{user_id}/email-settings
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "email_on_new_question": true,
+  "email_on_reminder": false
+}
+```
+
+Only boolean values are allowed; omitted keys are unchanged.
+
+**Response (200):**
+
+```json
+{
+  "message": "Email settings updated",
+  "email_on_new_question": true,
+  "email_on_reminder": false
+}
+```
+
+### Update Push Notification Preference
+
+**Authentication:** Required (JWT Bearer token - must match `user_id` in URL)
+
+Controls whether the user should receive system-level push notifications from the server (Firebase
+Cloud Messaging). Defaults to `false` to respect privacy.
+
+```http
+PUT /api/users/{user_id}/push-settings
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{
+  "push_notifications_enabled": true
+}
+```
+
+Only a boolean value is accepted; non-boolean requests return `400`.
+
+**Response (200):**
+
+```json
+{
+  "message": "Push settings updated",
+  "push_notifications_enabled": true
+}
+```
+
+The scheduler will skip sending push notifications for groups where the user's membership has this
+flag set to `false`, even if device tokens are registered.
 
 ---
 
@@ -2005,6 +2177,46 @@ Content-Type: application/json
 - `422` New password too weak (min 8 chars, uppercase, lowercase, digit)
 
 ---
+
+## Admin: Application Settings
+
+The backend exposes a simple settings API consumed by the admin UI. Currently the only configurable
+option is the requirement that users verify their email before they may log in.
+
+Unverified accounts are also automatically purged after 24 hours by a periodic background job,
+regardless of this setting; the toggle merely controls whether verification is enforced at login
+time.
+
+### Get Settings
+
+```http
+GET /api/admin/settings
+Authorization: Bearer <admin_access_token>
+```
+
+**Response (200):**
+
+```json
+{ "require_email_verification": false }
+```
+
+### Update Settings
+
+```http
+PUT /api/admin/settings
+Authorization: Bearer <admin_access_token>
+Content-Type: application/json
+
+{ "require_email_verification": true }
+```
+
+**Response (200):**
+
+```json
+{ "require_email_verification": true }
+```
+
+Changes are audited under `SETTINGS_UPDATE`.
 
 ### Initiate TOTP Setup
 
@@ -3292,6 +3504,11 @@ Authorization: Bearer <access_token>
 
 Push notifications are **optional** and use Firebase Cloud Messaging (FCM) HTTP v1 API.
 
+> **Note:** Even when the server is configured for FCM, individual users must **opt in** to receive
+> push alerts. Use the `/api/users/{user_id}/push-settings` endpoint to toggle
+> `push_notifications_enabled` (defaults to `false`). The scheduler will not send pushes to users
+> who have opted out, regardless of registered device tokens.
+
 ### Configuration
 
 To enable push notifications, set these environment variables:
@@ -3459,9 +3676,11 @@ The server sends these notification types automatically:
 | `daily_reminder`    | User hasn't answered and streak is at risk | "Don't break your 5-day streak! 🔥" |
 | `results_available` | Voting results ready                       | "Results are in! 📊"                |
 
-**Streak-at-Risk Reminders:** When a new daily question is created, members who missed the previous
-question and had an active streak (`longest_streak > 0`) automatically receive a `daily_reminder`
-push notification. This helps users maintain their streaks.
+**Streak-at-Risk Reminders:** Approximately one hour _before_ a group's daily question rolls over,
+all members with a positive answer streak are sent a `daily_reminder` push notification (and
+optionally email) if they have opted in. The advance notice gives users a chance to answer the
+upcoming question and avoid having their streak reset to zero. Previously the alert was issued after
+a missed question; the new timing is intended to be proactive.
 
 ### Mobile App Integration
 

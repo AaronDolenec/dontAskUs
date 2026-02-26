@@ -45,6 +45,15 @@ class AuthLoginRequest(BaseModel):
     password: str
 
 
+class AuthVerifyEmailRequest(BaseModel):
+    """Request body for email verification (registration step)."""
+    email: EmailStr
+    code: str = Field(..., min_length=1, max_length=64)
+
+
+# verification request moved to top level to avoid circular import issues
+
+
 class AuthTokenResponse(BaseModel):
     """Response after successful login/register with JWT tokens."""
     access_token: str

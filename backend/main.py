@@ -27,7 +27,7 @@ from core import ALLOWED_ORIGINS, AVATAR_UPLOAD_DIR, SCHEDULE_INTERVAL_SECONDS, 
 from core.models import ApiRequestLog
 from services import background_scheduler
 from scripts import initialize_default_question_set, assign_default_set_to_unassigned_groups
-from routes import auth, groups, questions, question_sets, push, avatars, websocket, admin, group_creator
+from routes import auth, groups, questions, question_sets, push, avatars, websocket, admin, group_creator, users
 
 load_dotenv()
 
@@ -399,6 +399,7 @@ app.include_router(questions.router)
 app.include_router(question_sets.router)
 app.include_router(push.router)
 app.include_router(avatars.router)
+app.include_router(users.router)
 app.include_router(websocket.router)
 app.include_router(admin.router)
 app.include_router(group_creator.router)

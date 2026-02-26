@@ -173,6 +173,11 @@ class User(Base):
     suspension_reason = Column(Text, nullable=True)
     last_known_ip = Column(INET, nullable=True)
     user_metadata = Column(JSONB, nullable=True, default=None)
+    # Email notification preferences (per-group membership)
+    email_notify_new_question = Column(Boolean, default=False)
+    email_notify_reminder = Column(Boolean, default=False)
+    # Per-membership push notification preference (FCM). Default: opt-out (False).
+    push_notify_enabled = Column(Boolean, default=False)
     
     group = relationship("Group", back_populates="members", foreign_keys=[group_id])
     account = relationship("Account", back_populates="memberships", foreign_keys=[account_id])
@@ -390,6 +395,36 @@ class ApiRequestLog(Base):
 class PasswordResetToken(Base):
     """Stores hashed password-reset tokens with expiry."""
     __tablename__ = "password_reset_tokens"
+
+    id = Column(Integer, primary_key=True)
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)
+    token_hash = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+
+    account = relationship("Account")
+
+
+class AppSetting(Base):
+    """Simple key/value store for application-wide settings.
+
+    Used by the admin panel to persist toggles such as whether email
+    verification is required for new registrations.
+    """
+    __tablename__ = "app_settings"
+
+    key = Column(String(100), primary_key=True)
+    value = Column(String(500), nullable=False)
+
+
+class EmailVerificationToken(Base):
+    """Verification tokens sent to new users when email verification is required.
+
+    Structure closely mirrors PasswordResetToken but is used for newly registered
+    accounts that must verify before logging in.
+    """
+    __tablename__ = "email_verification_tokens"
 
     id = Column(Integer, primary_key=True)
     account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)

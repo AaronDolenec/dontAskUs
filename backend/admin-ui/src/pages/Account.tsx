@@ -16,6 +16,7 @@ export default function Account() {
   const [loading, setLoading] = useState(true)
   const [totpSecret, setTotpSecret] = useState('')
   const [totpUri, setTotpUri] = useState('')
+  const [requireEmailVerify, setRequireEmailVerify] = useState(false)
   const [totpCode, setTotpCode] = useState('')
   const [totpError, setTotpError] = useState('')
   const [totpSuccess, setTotpSuccess] = useState('')
@@ -32,8 +33,21 @@ export default function Account() {
     }
   }
 
+  const fetchSettings = async () => {
+    try {
+      const res = await request('/api/admin/settings')
+      if (res.ok) {
+        const data = await res.json()
+        setRequireEmailVerify(!!data.require_email_verification)
+      }
+    } catch (err: any) {
+      console.error('Error fetching settings:', err)
+    }
+  }
+
   useEffect(() => {
     fetchProfile()
+    fetchSettings()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleChangePassword = async (e: React.FormEvent) => {
@@ -138,6 +152,32 @@ export default function Account() {
             <p><strong>Last Login IP:</strong> {profile.last_login_ip || 'N/A'}</p>
           </div>
         )}
+      </div>
+
+      <div className="section">
+        <h2>Global Settings</h2>
+        <div className="form-group">
+          <label>
+            <input
+              type="checkbox"
+              checked={requireEmailVerify}
+              onChange={async e => {
+                const val = e.target.checked
+                try {
+                  const res = await request('/api/admin/settings', {
+                    method: 'PUT',
+                    body: { require_email_verification: val },
+                  })
+                  if (res.ok) setRequireEmailVerify(val)
+                } catch (err: any) {
+                  console.error('Error updating setting:', err)
+                }
+              }}
+            />{' '}
+            Require email verification on registration
+          </label>
+          <p className="small">Users must confirm their email address before they can log in.</p>
+        </div>
       </div>
 
       <div className="section">

@@ -136,6 +136,37 @@ async def get_admin_profile(admin: AdminUser = Depends(get_current_admin)):
     )
 
 
+@router.get("/settings")
+async def get_app_settings(admin: AdminUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    """Get configurable application settings (used by admin UI)."""
+    from core.settings import get_require_email_verification
+    return {"require_email_verification": get_require_email_verification(db)}
+
+
+@router.put("/settings")
+async def update_app_settings(request: Request, admin: AdminUser = Depends(get_current_admin), db: Session = Depends(get_db)):
+    """Update application settings. Currently only email verification requirement."""
+    data = await request.json()
+    changed = {}
+    from core.settings import set_require_email_verification, get_require_email_verification
+
+    if "require_email_verification" in data:
+        val = bool(data.get("require_email_verification"))
+        set_require_email_verification(db, val)
+        changed["require_email_verification"] = val
+        # log the change
+        # ip_address is optional; when invoked from UI we don't have it handy
+        # record a non-null target_id since audit_logs.target_id is non-nullable
+        log_admin_action(
+            admin_id=admin.id, action="SETTINGS_UPDATE", target_type="APP",
+            target_id="app", before_state=None, after_state={"require_email_verification": val},
+            ip_address=None, reason="Updated email verification requirement", db=db,
+        )
+
+    # return current settings after update
+    return {"require_email_verification": get_require_email_verification(db)}
+
+
 @router.post("/account/change-password")
 async def change_admin_password(
     request: ChangePasswordRequest, admin: AdminUser = Depends(get_current_admin),

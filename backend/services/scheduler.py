@@ -23,11 +23,12 @@ from sqlalchemy import func, and_
 
 from core.database import SessionLocal
 from core.models import (
-    Group, User, DailyQuestion, QuestionSet, QuestionSetTemplate,
+    Group, User, Account, DailyQuestion, QuestionSet, QuestionSetTemplate,
     QuestionTemplate, GroupQuestionSet, QuestionTypeEnum, UserDeviceToken,
     Vote,
 )
 from .push_notifications import push_service
+from services.email import send_daily_question_email, send_reminder_email
 from .ws_manager import manager as ws_manager
 from auth.utils import get_group_member_names, generate_duos
 
@@ -274,6 +275,37 @@ def _check_streaks_on_new_question(db, group):
             member.answer_streak = streak.current_streak
 
 
+def _cleanup_unverified_accounts():
+    """Delete any accounts that were created >24h ago and never verified.
+
+    When email verification is enabled we create an ``Account`` record and
+    an ``EmailVerificationToken``.  We don't want unverified accounts to linger
+    indefinitely (they could be used to spam the system), so this helper runs
+    periodically from the background scheduler and removes any stale entries.
+
+    The cascade on the ``accounts.id`` foreign key takes care of cleaning up
+    related tokens/memberships.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    db = SessionLocal()
+    try:
+        # find accounts that never verified and are older than cutoff
+        old_accounts = db.query(Account).filter(
+            Account.is_verified == False,
+            Account.created_at < cutoff,
+        ).all()
+        if old_accounts:
+            logging.info("Deleting %d stale unverified account(s)", len(old_accounts))
+        for acct in old_accounts:
+            db.delete(acct)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 # ============= Public API =============
 
 def create_today_question_for_group(db, group, exclude_template_ids: set | None = None):
@@ -403,6 +435,13 @@ def _process_group_question(db, group, selected_today):
 
 def _run_daily_question_creation(db):
     """Core logic: check all groups and create questions for those whose day has rolled over."""
+    # send reminders one hour before rollover for any groups
+    now = datetime.now(timezone.utc)
+    next_hour = (now + timedelta(hours=1)).hour
+    groups_next = db.query(Group).filter(Group.question_hour == next_hour).all()
+    for g in groups_next:
+        _send_streak_at_risk_reminders(db, g)
+
     groups = db.query(Group).all()
     selected_today: set[int] = set()
     groups_needing_push: list[tuple] = []  # (group, question_day)
@@ -423,7 +462,7 @@ def _run_daily_question_creation(db):
         _broadcast_new_question_ws(db, group, question_day)
         if push_service.is_enabled():
             _send_new_question_notification(db, group, question_day)
-            _send_streak_at_risk_reminders(db, group)
+        # note: reminders are sent one hour ahead (above), not after creation
 
 
 def create_daily_questions_for_all():
@@ -457,13 +496,17 @@ def _send_new_question_notification(db, group, question_day):
         if not question:
             return
 
-        group_user_ids = [
-            m.id for m in db.query(User).filter(User.group_id == group.id, User.is_suspended == False).all()
-        ]
-        if device_tokens := db.query(UserDeviceToken).filter(
-            UserDeviceToken.user_id.in_(group_user_ids),
+        group_users = db.query(User).filter(User.group_id == group.id, User.is_suspended == False).all()
+
+        # Push notifications (FCM) to registered device tokens for users who opted in
+        # Only send to device tokens whose owning user has push_notify_enabled == True
+        device_tokens = db.query(UserDeviceToken).join(User, User.id == UserDeviceToken.user_id).filter(
+            User.group_id == group.id,
+            User.is_suspended == False,
+            getattr(User, "push_notify_enabled", False) == True,
             UserDeviceToken.is_active == True,
-        ).all():
+        ).all()
+        if device_tokens:
             tokens = [dt.token for dt in device_tokens]
             asyncio.run(
                 push_service.send_daily_question_notification(
@@ -473,6 +516,18 @@ def _send_new_question_notification(db, group, question_day):
                 )
             )
             logging.info("Push notification sent to %d devices for group %s", len(tokens), group.group_id)
+
+        # Email notifications for users who opted in (per-membership)
+        for member in group_users:
+            try:
+                if getattr(member, "email_notify_new_question", False) and member.account and getattr(member.account, "email", None):
+                    send_daily_question_email(
+                        to=member.account.email,
+                        group_name=group.name,
+                        question_preview=question.question_text[:200],
+                    )
+            except Exception as e:
+                logging.exception("Failed to send email new-question to %s: %s", getattr(member.account, 'email', None), e)
     except Exception as e:
         logging.error("Failed to send push notification for group %s: %s", group.group_id, e)
 
@@ -536,10 +591,14 @@ def _broadcast_new_question_ws(db, group, question_day):
 
 
 def _send_streak_at_risk_reminders(db, group):
-    """Send FCM push reminders to members who didn't answer the previous question.
+    """Send FCM push reminders to members who currently have a streak.
 
-    Called after a new question is created. Members who missed the last question
-    and had a streak > 0 get a 'streak at risk' notification.
+    This function is invoked approximately one hour before a group's scheduled
+    new-question rollover (based on `group.question_hour`).  The intent is to
+    notify users with an active streak that their streak is at risk so they can
+    answer the upcoming question and avoid a reset.  It no longer checks whether
+    the previous question was missed; that logic used to run *after* rollout and
+    is no longer applicable.
     """
     try:
         from core.models import UserGroupStreak
@@ -549,9 +608,13 @@ def _send_streak_at_risk_reminders(db, group):
             streak = db.query(UserGroupStreak).filter(
                 UserGroupStreak.user_id == member.id, UserGroupStreak.group_id == group.id
             ).first()
-            # Streak was just reset to 0 — they missed the previous question
-            # But we only remind them if they previously had a streak (longest_streak > 0)
-            if streak and streak.current_streak == 0 and streak.longest_streak > 0:
+            # only remind if user currently has a positive streak
+            if not streak or (streak.current_streak or 0) <= 0:
+                continue
+                # Respect per-membership push preference
+                if not getattr(member, "push_notify_enabled", False):
+                    continue
+
                 device_tokens = db.query(UserDeviceToken).filter(
                     UserDeviceToken.user_id == member.id,
                     UserDeviceToken.is_active == True,
@@ -565,8 +628,19 @@ def _send_streak_at_risk_reminders(db, group):
                             streak_count=streak.longest_streak,
                         )
                     )
-                    logging.info("Streak-at-risk reminder sent to %s in group %s",
+                    logging.info("Pre-rollover streak reminder sent to %s in group %s",
                                  member.display_name, group.group_id)
+
+                # Send reminder emails to users who opted in
+                try:
+                    if getattr(member, "email_notify_reminder", False) and member.account and getattr(member.account, "email", None):
+                        send_reminder_email(
+                            to=member.account.email,
+                            group_name=group.name,
+                            streak_count=streak.longest_streak,
+                        )
+                except Exception as e:
+                    logging.exception("Failed to send reminder email to %s: %s", getattr(member.account, 'email', None), e)
     except Exception as e:
         logging.error("Failed to send streak reminders for group %s: %s", group.group_id, e)
 
@@ -601,3 +675,9 @@ def background_scheduler(interval_seconds: int = 86400):
             logging.info("Scheduled question creation check completed")
         except Exception:
             logging.exception("Scheduled create_daily_questions_for_all call failed, will retry next cycle")
+
+        # periodically purge stale unverified accounts to prevent abuse
+        try:
+            _cleanup_unverified_accounts()
+        except Exception:
+            logging.exception("Failed to cleanup unverified accounts")

@@ -13,15 +13,17 @@ from sqlalchemy.orm import Session
 
 from core.config import USER_JWT_ACCESS_EXPIRE_MINUTES, MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES, PASSWORD_RESET_EXPIRE_MINUTES
 from core.database import get_db
-from core.models import Account, User, Group, QuestionSet, GroupQuestionSet, PasswordResetToken, DailyQuestion, Vote, UserGroupStreak, GroupCustomSet, UserDeviceToken, GroupAnalytics
+from core.models import Account, User, Group, QuestionSet, GroupQuestionSet, PasswordResetToken, DailyQuestion, Vote, UserGroupStreak, GroupCustomSet, UserDeviceToken, GroupAnalytics, EmailVerificationToken
 from core.schemas import (
     AuthRegisterRequest, AuthLoginRequest, AuthTokenResponse, AuthRefreshRequest,
     AccountResponse, AccountGroupMembership, AccountMeResponse,
     UserChangePasswordRequest, JoinGroupRequest, GroupCreate,
     ForgotPasswordRequest, ResetPasswordRequest,
+    AuthVerifyEmailRequest,
 )
 from scripts.seed_defaults import initialize_default_question_set
 from services.email import send_password_reset_email, is_smtp_configured
+from services.email import send_email_verification_email
 from auth.utils import (
     hash_password, verify_password, create_user_jwt, verify_user_jwt,
     get_current_account, get_avatar_url, get_random_avatar_color,
@@ -74,7 +76,7 @@ def _get_account_avatar_and_streak(account: Account, db: Session, base_url: str 
     }
 
 
-@router.post("/register", response_model=AuthTokenResponse)
+@router.post("/register")  # may return tokens or simple message depending on config
 @limiter.limit("10/minute")
 def register_account(request: Request, body: AuthRegisterRequest, db: Session = Depends(get_db)):
     """Register a new user account with email and password."""
@@ -86,6 +88,7 @@ def register_account(request: Request, body: AuthRegisterRequest, db: Session = 
         email=body.email.lower().strip(),
         password_hash=hash_password(body.password),
         display_name=body.display_name.strip(),
+        is_verified=False,
     )
     db.add(account)
     db.commit()
@@ -93,16 +96,71 @@ def register_account(request: Request, body: AuthRegisterRequest, db: Session = 
 
     logging.info(f"New account registered: {account.account_id} ({account.email})")
 
-    access_token = create_user_jwt(account.id, "access")
-    refresh_token = create_user_jwt(account.id, "refresh")
+    # after creating account, decide whether we require email verification
+    from core.settings import get_require_email_verification
 
-    return AuthTokenResponse(
-        access_token=access_token, refresh_token=refresh_token,
-        token_type="bearer", expires_in=USER_JWT_ACCESS_EXPIRE_MINUTES * 60,
-        account_id=account.account_id, display_name=account.display_name, email=account.email,
-        avatar_url=None, color_avatar=None, answer_streak=0, longest_answer_streak=0,
-        login_count=0,
+    require_verify = get_require_email_verification(db)
+    if not require_verify:
+        # mark verified immediately so login doesn't complain
+        account.is_verified = True
+        db.commit()
+        access_token = create_user_jwt(account.id, "access")
+        refresh_token = create_user_jwt(account.id, "refresh")
+        return AuthTokenResponse(
+            access_token=access_token, refresh_token=refresh_token,
+            token_type="bearer", expires_in=USER_JWT_ACCESS_EXPIRE_MINUTES * 60,
+            account_id=account.account_id, display_name=account.display_name, email=account.email,
+            avatar_url=None, color_avatar=None, answer_streak=0, longest_answer_streak=0,
+            login_count=0,
+        )
+
+    # require verification: generate a 6-digit code and email it
+    code = "".join([str(secrets.randbelow(10)) for _ in range(6)])
+    token_hash = hash_password(code)
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    ver_token = EmailVerificationToken(
+        account_id=account.id,
+        token_hash=token_hash,
+        expires_at=expires_at,
     )
+    db.add(ver_token)
+    db.commit()
+
+    # send verification email if SMTP configured
+    if is_smtp_configured():
+        send_email_verification_email(account.email, code)
+    else:
+        logging.warning("SMTP not configured — verification code for %s: %s", account.email, code)
+
+    return {"message": "Account created. Please verify your email before logging in."}
+
+
+@router.post("/verify-email")
+@limiter.limit("10/minute")
+def verify_email(request: Request, body: AuthVerifyEmailRequest, db: Session = Depends(get_db)):
+    """Verify a newly registered account using the code sent by email.
+
+    Users must call this when `require_email_verification` is enabled. On success the
+    account's ``is_verified`` flag is set to True; the user can then login normally.
+    """
+    account = db.query(Account).filter(func.lower(Account.email) == body.email.lower()).first()
+    if not account:
+        raise HTTPException(status_code=400, detail="Invalid email or code")
+
+    # find the most recent unused token
+    token = db.query(EmailVerificationToken).filter(
+        EmailVerificationToken.account_id == account.id,
+        EmailVerificationToken.used_at.is_(None),
+        EmailVerificationToken.expires_at > datetime.now(timezone.utc),
+    ).order_by(EmailVerificationToken.created_at.desc()).first()
+    if not token or not verify_password(body.code, token.token_hash):
+        raise HTTPException(status_code=400, detail="Invalid email or code")
+
+    # mark verified and consume token
+    account.is_verified = True
+    token.used_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"message": "Email verified successfully"}
 
 
 @router.post("/login", response_model=AuthTokenResponse)
@@ -143,13 +201,32 @@ def login_account(request: Request, body: AuthLoginRequest, db: Session = Depend
     account.login_attempt_count = 0
     account.is_locked_until = None
     account.last_login = datetime.now(timezone.utc)
-    account.last_login_ip = request.client.host if request.client else None
+    # store IP address only if it looks like a valid IPv4/IPv6 string
+    try:
+        ipval = request.client.host if request.client else None
+        # simple validation using ipaddress module
+        import ipaddress
+        if ipval:
+            try:
+                ipaddress.ip_address(ipval)
+                account.last_login_ip = ipval
+            except Exception:
+                account.last_login_ip = None
+        else:
+            account.last_login_ip = None
+    except Exception:
+        account.last_login_ip = None
     account.login_count = (account.login_count or 0) + 1
     db.flush()
     db.commit()
     db.refresh(account)
 
     logging.info(f"Account login: {account.account_id} ({account.email}) [login #{account.login_count}]")
+
+    # if email verification is required, enforce it
+    from core.settings import get_require_email_verification
+    if get_require_email_verification(db) and not account.is_verified:
+        raise HTTPException(status_code=403, detail="Email address not verified")
 
     access_token = create_user_jwt(account.id, "access")
     refresh_token = create_user_jwt(account.id, "refresh")

@@ -110,6 +110,25 @@ check "POST /api/admin/login (nonexistent user)" "401" "$code" "$body"
 
 # ════════════════════════════════════════════════════════════
 echo ""
+echo -e "    ${CYAN}GET /api/admin/settings${NC}"
+resp=$(req GET "$BASE/api/admin/settings" \
+  -H "Authorization: Bearer $ADMIN_ACCESS")
+code=$(echo "$resp" | head -1)
+body=$(echo "$resp" | tail -n +2)
+check "GET /api/admin/settings" "200" "$code" "$body"
+
+echo ""
+echo -e "    ${CYAN}PUT /api/admin/settings (enable email verification)${NC}"
+resp=$(req PUT "$BASE/api/admin/settings" \
+  -H "Authorization: Bearer $ADMIN_ACCESS" \
+  -H "Content-Type: application/json" \
+  -d '{"require_email_verification":true}')
+code=$(echo "$resp" | head -1)
+body=$(echo "$resp" | tail -n +2)
+check "PUT /api/admin/settings (enable verification)" "200" "$code" "$body"
+
+# ════════════════════════════════════════════════════════════
+echo ""
 echo -e "    ${CYAN}POST /api/admin/refresh${NC}"
 # ════════════════════════════════════════════════════════════
 resp=$(req POST "$BASE/api/admin/refresh" \
@@ -207,6 +226,14 @@ check "GET /api/admin/audit-logs" "200" "$code" "$body"
 # ════════════════════════════════════════════════════════════
 echo ""
 echo -e "${BOLD}[3] User Auth Endpoints${NC}"
+# ensure registration behaves predictably by disabling verification first
+resp=$(req PUT "$BASE/api/admin/settings" \
+  -H "Authorization: Bearer $ADMIN_ACCESS" \
+  -H "Content-Type: application/json" \
+  -d '{"require_email_verification":false}')
+code=$(echo "$resp" | head -1)
+body=$(echo "$resp" | tail -n +2)
+check "PUT /api/admin/settings (disable verification)" "200" "$code" "$body"
 echo -e "    ${CYAN}POST /api/auth/register${NC}"
 # ════════════════════════════════════════════════════════════
 TIMESTAMP=$(date +%s)
@@ -298,6 +325,74 @@ resp=$(req GET "$BASE/api/auth/me")
 code=$(echo "$resp" | head -1)
 body=$(echo "$resp" | tail -n +2)
 check "GET /api/auth/me (no auth)" "401" "$code" "$body"
+
+# ════════════════════════════════════════════════════════════
+echo ""
+echo -e "${BOLD}[3.x] Email verification flow${NC}"
+
+# enable requirement again for this subtest
+resp=$(req PUT "$BASE/api/admin/settings" \
+  -H "Authorization: Bearer $ADMIN_ACCESS" \
+  -H "Content-Type: application/json" \
+  -d '{"require_email_verification":true}')
+code=$(echo "$resp" | head -1)
+body=$(echo "$resp" | tail -n +2)
+check "PUT /api/admin/settings (enable verification)" "200" "$code" "$body"
+
+# register a user that will need to verify
+VERIFY_EMAIL="verify_${TIMESTAMP}@example.com"
+resp=$(req POST "$BASE/api/auth/register" \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"$VERIFY_EMAIL\",\"password\":\"TestPass1\",\"display_name\":\"VerifyUser\"}")
+code=$(echo "$resp" | head -1)
+body=$(echo "$resp" | tail -n +2)
+check "POST /api/auth/register (verification required)" "200" "$code" "$body"
+
+# login attempt should be forbidden
+resp=$(req POST "$BASE/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"$VERIFY_EMAIL\",\"password\":\"TestPass1\"}")
+code=$(echo "$resp" | head -1)
+body=$(echo "$resp" | tail -n +2)
+check "POST /api/auth/login (unverified)" "403" "$code" "$body"
+
+# try bogus verify-email request
+resp=$(req POST "$BASE/api/auth/verify-email" \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"$VERIFY_EMAIL\",\"code\":\"000000\"}")
+code=$(echo "$resp" | head -1)
+body=$(echo "$resp" | tail -n +2)
+check "POST /api/auth/verify-email (bad code)" "400" "$code" "$body"
+
+# attempt to pull real code from backend logs (only works if SMTP not configured)
+CODE=$(docker logs dontaskus-backend-1 2>&1 | grep "$VERIFY_EMAIL" | grep "verification code" | tail -1 | awk -F": " '{print $NF}')
+if [ -n "$CODE" ]; then
+    resp=$(req POST "$BASE/api/auth/verify-email" \
+      -H "Content-Type: application/json" \
+      -d "{\"email\":\"$VERIFY_EMAIL\",\"code\":\"$CODE\"}")
+    code=$(echo "$resp" | head -1)
+    body=$(echo "$resp" | tail -n +2)
+    check "POST /api/auth/verify-email (correct code)" "200" "$code" "$body"
+
+    # login again should now succeed
+    resp=$(req POST "$BASE/api/auth/login" \
+      -H "Content-Type: application/json" \
+      -d "{\"email\":\"$VERIFY_EMAIL\",\"password\":\"TestPass1\"}")
+    code=$(echo "$resp" | head -1)
+    body=$(echo "$resp" | tail -n +2)
+    check "POST /api/auth/login (after verifying)" "200" "$code" "$body"
+else
+    skip "POST /api/auth/verify-email (correct code)" "could not extract code from logs"
+fi
+
+# turn verification off again to leave system in default state
+resp=$(req PUT "$BASE/api/admin/settings" \
+  -H "Authorization: Bearer $ADMIN_ACCESS" \
+  -H "Content-Type: application/json" \
+  -d '{"require_email_verification":false}')
+code=$(echo "$resp" | head -1)
+body=$(echo "$resp" | tail -n +2)
+check "PUT /api/admin/settings (disable verification)" "200" "$code" "$body"
 
 # ════════════════════════════════════════════════════════════
 echo ""
