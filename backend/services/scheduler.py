@@ -609,10 +609,9 @@ def _send_streak_at_risk_reminders(db, group):
             # only remind if user currently has a positive streak
             if not streak or (streak.current_streak or 0) <= 0:
                 continue
-                # Respect per-membership push preference
-                if not getattr(member, "push_notify_enabled", False):
-                    continue
 
+            # Respect per-membership push preference
+            if getattr(member, "push_notify_enabled", False):
                 device_tokens = db.query(UserDeviceToken).filter(
                     UserDeviceToken.user_id == member.id,
                     UserDeviceToken.is_active == True,
@@ -623,22 +622,22 @@ def _send_streak_at_risk_reminders(db, group):
                         push_service.send_reminder_notification(
                             tokens=tokens,
                             group_name=group.name,
-                            streak_count=streak.longest_streak,
+                            streak_count=streak.current_streak,
                         )
                     )
                     logging.info("Pre-rollover streak reminder sent to %s in group %s",
                                  member.display_name, group.group_id)
 
-                # Send reminder emails to users who opted in
-                try:
-                    if getattr(member, "email_notify_reminder", False) and member.account and getattr(member.account, "email", None):
-                        send_reminder_email(
-                            to=member.account.email,
-                            group_name=group.name,
-                            streak_count=streak.longest_streak,
-                        )
-                except Exception as e:
-                    logging.exception("Failed to send reminder email to %s: %s", getattr(member.account, 'email', None), e)
+            # Send reminder emails to users who opted in
+            try:
+                if getattr(member, "email_notify_reminder", False) and member.account and getattr(member.account, "email", None):
+                    send_reminder_email(
+                        to=member.account.email,
+                        group_name=group.name,
+                        streak_count=streak.current_streak,
+                    )
+            except Exception as e:
+                logging.exception("Failed to send reminder email to %s: %s", getattr(member.account, 'email', None), e)
     except Exception as e:
         logging.error("Failed to send streak reminders for group %s: %s", group.group_id, e)
 

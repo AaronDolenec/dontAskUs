@@ -113,8 +113,9 @@ Everything else requires a valid JWT access token.
 The backend **automatically generates a new question for each group once per day**:
 
 - Each group has its own **"new day" rollover hour** (`question_hour`, 0–23 UTC). When a group is
-  created, this hour is set to approximately the creation hour **±3 hours of random jitter**. This
-  means different groups roll over to a new question at different times of day.
+  created, this hour is set to a **fixed random hour between 08:00 and 21:00 UTC**. The selected
+  hour remains unchanged for the lifetime of the group. This means different groups roll over to a
+  new question at different times of day.
 - The scheduler runs **every hour** to check all groups and create questions for those whose day has
   rolled over.
 - **One question at a time:** When a new question is created, all previous questions for the group
@@ -141,8 +142,8 @@ A group's "question day" does **not** flip at midnight UTC. Instead, it flips at
 - At 13:59 UTC on Feb 19 → the group's question day is still **Feb 18**
 - At 14:00 UTC on Feb 19 → the group's question day is now **Feb 19**, and a new question is created
 
-This ensures each group gets a new question roughly **24 hours after the previous one**, with
-natural variation (±3 hours) between groups so they don't all roll over at the same instant.
+This ensures each group gets a new question roughly **24 hours after the previous one**, while
+keeping each group on a stable daily schedule.
 
 > **For app developers:** The `question_hour` is internal — you don't need to know it. Just call
 > `GET /groups/{group_id}/questions/today` and the backend will always return the correct current
@@ -1313,6 +1314,8 @@ Authorization: Bearer <admin_access_token>
   "question_id": "uuid",
   "question_text": "Who is the funniest?",
   "question_type": "member_choice",
+  "question_date": "2026-02-19T00:00:00Z",
+  "created_at": "2026-02-19T14:03:12Z",
   "options": ["Alice", "Bob", "Charlie"]
 }
 ```
@@ -1356,6 +1359,7 @@ Authorization: Bearer <access_token>
     "No": 2
   },
   "question_date": "2026-02-19T00:00:00Z",
+  "created_at": "2026-02-19T14:03:12Z",
   "is_active": true,
   "total_votes": 6,
   "allow_multiple": false,
@@ -1400,6 +1404,8 @@ Authorization: Bearer <access_token>
 | `question_type`    | string                     | One of: `binary_vote`, `single_choice`, `member_choice`, `duo_choice`, `free_text`              |
 | `options`          | string[] \| null           | Available answer choices (`null` for `free_text`)                                               |
 | `option_counts`    | object \| null             | Vote count per option (e.g. `{"Yes": 4, "No": 2}`)                                              |
+| `question_date`    | string (ISO datetime)      | Logical per-group question day timestamp used for daily grouping                                |
+| `created_at`       | string (ISO datetime)      | Exact timestamp when this `DailyQuestion` record was created                                    |
 | `total_votes`      | int                        | Total number of users who have answered                                                         |
 | `allow_multiple`   | bool                       | Whether multi-select is allowed for this question                                               |
 | `user_vote`        | string \| string[] \| null | Current user's answer. `null` = not yet answered. Array if `allow_multiple` is true             |
@@ -1524,6 +1530,8 @@ Content-Type: application/json
 {
   "success": true,
   "question_type": "binary_vote",
+  "question_date": "2026-02-19T00:00:00Z",
+  "created_at": "2026-02-19T14:03:12Z",
   "vote_count_a": 4,
   "vote_count_b": 2,
   "total_votes": 6,
@@ -1558,6 +1566,9 @@ Content-Type: application/json
 The submit response **always** includes `answer_details` (the complete list of who answered what)
 and `featured_member` (the randomly selected member, or `null` if this question doesn't use the
 `{member}` placeholder).
+
+It also includes `question_date` (logical question day) and `created_at` (exact creation timestamp
+for the question record).
 
 For `free_text` questions, the response also includes `text_answers`:
 
@@ -1642,6 +1653,7 @@ Authorization: Bearer <access_token>
         "No": 2
       },
       "question_date": "2026-02-19T00:00:00Z",
+      "created_at": "2026-02-19T14:03:12Z",
       "is_active": false,
       "vote_count_a": 4,
       "vote_count_b": 2,
@@ -1679,6 +1691,7 @@ Authorization: Bearer <access_token>
         "Charlie": 1
       },
       "question_date": "2026-02-18T00:00:00Z",
+      "created_at": "2026-02-18T14:02:58Z",
       "is_active": false,
       "vote_count_a": 0,
       "vote_count_b": 0,
