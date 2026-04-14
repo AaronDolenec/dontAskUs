@@ -291,6 +291,7 @@ class DailyQuestionResponse(BaseModel):
     options: list | None = None  # list of member names or duo labels (or null for free_text)
     option_counts: dict | None = None  # vote counts per option
     question_date: datetime
+    created_at: datetime
     is_active: bool
     total_votes: int
     allow_multiple: bool = False

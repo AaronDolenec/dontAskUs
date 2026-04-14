@@ -94,7 +94,8 @@ def get_todays_question(request: Request, group_id: str = PathParam(...), db: Se
         id=question.id, question_id=question.question_id,
         question_text=question.question_text, question_type=question.question_type,
         options=options_list, option_counts=option_counts,
-        question_date=question.question_date, is_active=question.is_active,
+        question_date=question.question_date, created_at=question.created_at,
+        is_active=question.is_active,
         total_votes=total_votes, allow_multiple=question.allow_multiple,
         user_vote=user_vote, user_streak=user_streak, longest_streak=longest_streak,
         text_answers=text_answers, answer_details=answer_details,
@@ -179,6 +180,8 @@ def submit_answer(
     base_url = str(request.base_url).rstrip('/')
     response = {
         "success": True, "question_type": question.question_type.value,
+        "question_date": question.question_date,
+        "created_at": question.created_at,
         "vote_count_a": vote_count_a, "vote_count_b": vote_count_b,
         "total_votes": total_votes, "option_counts": option_counts,
         "options": options_list, "user_answer": user_answer_value,
@@ -260,7 +263,8 @@ def get_question_history(
             "question_id": q.question_id, "question_text": q.question_text,
             "question_type": q.question_type.value,
             "option_a": q.option_a, "option_b": q.option_b,
-            "options": opts, "option_counts": oc, "question_date": q.question_date,
+            "options": opts, "option_counts": oc,
+            "question_date": q.question_date, "created_at": q.created_at,
             "is_active": q.is_active,
             "vote_count_a": oc.get(opts[0], 0) if opts else 0,
             "vote_count_b": oc.get(opts[1], 0) if len(opts) > 1 else 0,

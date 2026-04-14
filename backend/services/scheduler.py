@@ -5,7 +5,7 @@ The group's daily question rolls over at that hour, so different groups get new 
 at different times of day.
 
 Provides:
-- compute_question_hour(created_at): deterministic rollover hour for a group
+- compute_question_hour(): assign a fixed rollover hour for a group
 - get_group_question_day(group): the current "question day" for a group
 - create_daily_questions_for_all(): batch question creation for all groups
 - create_today_question_for_group(): on-demand question creation for one group
@@ -38,20 +38,18 @@ DEFAULT_QUESTION_HOUR = 0  # fallback if group.question_hour is not set
 
 
 def compute_question_hour(created_at: datetime | None = None) -> int:
-    """Compute the question_hour for a new group.
-    
-    Based on the creation hour + a random offset of ±3 hours.
-    This means a group created at 14:00 UTC might get a rollover hour
-    anywhere between 11:00 and 17:00 UTC.
-    
-    The result is always 0-23.
+    """Compute a fixed per-group question_hour in 08:00-21:00 UTC.
+
+    The selected hour is randomized at group creation time but remains fixed
+    for the lifetime of the group.
+
+    Args:
+        created_at: kept for backward compatibility; ignored by this strategy.
+
+    Returns:
+        Integer hour in range [8, 21].
     """
-    if created_at is not None:
-        base_hour = created_at.hour
-    else:
-        base_hour = datetime.now(timezone.utc).hour
-    offset = random.randint(-3, 3)
-    return (base_hour + offset) % 24
+    return random.randint(8, 21)
 
 
 def get_group_question_day(group) -> datetype:

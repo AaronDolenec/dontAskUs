@@ -114,7 +114,7 @@ class Group(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     # Per-group "new day" hour (0-23 UTC). The group's daily question rolls over at this hour.
-    # Computed once at creation: created_at.hour + random offset in [-3, +3], clamped to 0-23.
+    # Computed once at creation as a fixed random hour in [8, 21] UTC.
     question_hour = Column(Integer, nullable=True)
     # New admin fields
     instance_admin_notes = Column(Text, nullable=True)

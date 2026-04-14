@@ -738,9 +738,9 @@ async def admin_create_group(
         group = Group(
             name=name, invite_code=invite_code, creator_id=None,
         )
-        # Set per-group rollover hour (~24h after creation ±3h jitter)
+        # Set per-group rollover hour (fixed per group, random in 08:00-21:00 UTC)
         from services.scheduler import compute_question_hour
-        group.question_hour = compute_question_hour(datetime.now(timezone.utc))
+        group.question_hour = compute_question_hour()
         db.add(group)
         db.commit()
         db.refresh(group)
@@ -905,6 +905,8 @@ async def admin_set_today_question(
         "question_id": dq.question_id,
         "question_text": dq.question_text,
         "question_type": dq.question_type.value if hasattr(dq.question_type, "value") else str(dq.question_type),
+        "question_date": dq.question_date,
+        "created_at": dq.created_at,
         "options": _json.loads(dq.options) if dq.options else [],
     }
 
